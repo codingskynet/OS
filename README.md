@@ -1,16 +1,15 @@
-# YukiOS
+# OS
 
-## How to Build & Run
-This is very temporary. I'll make it as Makefile.
+The toy project for implementing OS
+
+## How to Setup & Build & Run
 
 ```bash
-brew install qemu
-cargo install cargo-binutils
-rustup component add llvm-tools-preview
-
-RUSTFLAGS="-C link-args=--script=src/machine/rv64/virt/kernel.ld" cargo rustc --target=riscv64gc-unknown-none-elf --release
-rust-objcopy --strip-all -O binary ./target/riscv64gc-unknown-none-elf/release/kernel ./kernel.img
-qemu-system-riscv64 -machine virt -nographic -bios none  -kernel kernel.img
+make setup      # install dependencies including QEMU
+make run        # build + create kernel.img + boot on QEMU
+make build      # build only (ELF)
+make image      # build + create kernel.img
+make clean      # remove artifacts
 ```
 
 # Reference
