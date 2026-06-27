@@ -440,11 +440,6 @@ impl<'a> Iterator for RegIter<'a> {
     }
 }
 
-/// Create a [`RegIter`] from a raw `reg` property value.
-pub fn reg_iter(reg: &[u8], address_cells: u32, size_cells: u32) -> RegIter<'_> {
-    RegIter::new(reg, address_cells, size_cells)
-}
-
 #[cfg(test)]
 mod tests {
     use std::vec::Vec;
@@ -545,7 +540,7 @@ mod tests {
             .prop("reg")
             .expect("serial@10000000 should have a reg property");
 
-        let mut it = super::reg_iter(reg, 2, 2);
+        let mut it = RegIter::new(reg, 2, 2);
         let (addr, size) = it.next().expect("should yield one reg tuple");
         assert_eq!(addr, 0x10000000);
         assert_eq!(size, Some(0x100));
@@ -562,7 +557,7 @@ mod tests {
             .prop("reg")
             .expect("flash should have a reg property");
 
-        let tuples: Vec<_> = super::reg_iter(reg, 2, 2).collect();
+        let tuples: Vec<_> = RegIter::new(reg, 2, 2).collect();
         assert_eq!(tuples.len(), 2);
         assert_eq!(tuples[0], (0x20000000, Some(0x02000000)));
         assert_eq!(tuples[1], (0x22000000, Some(0x02000000)));
@@ -572,7 +567,7 @@ mod tests {
     fn reg_iter_4byte_address() {
         // Simulate a 32-bit address with #address-cells=1, #size-cells=1
         let reg = b"\x80\x00\x00\x00\x00\x10\x00\x00";
-        let tuples: Vec<_> = super::reg_iter(reg, 1, 1).collect();
+        let tuples: Vec<_> = RegIter::new(reg, 1, 1).collect();
         assert_eq!(tuples.len(), 1);
         assert_eq!(tuples[0], (0x80000000, Some(0x100000)));
     }
@@ -581,7 +576,7 @@ mod tests {
     fn reg_iter_zero_size_cells() {
         // #size-cells=0: reg is just addresses, no sizes
         let reg = b"\x00\x00\x00\x00\x10\x00\x00\x00";
-        let tuples: Vec<_> = super::reg_iter(reg, 2, 0).collect();
+        let tuples: Vec<_> = RegIter::new(reg, 2, 0).collect();
         assert_eq!(tuples.len(), 1);
         assert_eq!(tuples[0], (0x10000000, None));
     }
