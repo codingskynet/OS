@@ -1,3 +1,5 @@
+use core::ffi::CStr;
+
 use crate::dev::dt::Fdt;
 use crate::{console, println};
 
@@ -22,13 +24,11 @@ pub enum BootData {
 ///
 /// # Safety
 /// It must be called with a valid stack pointer and BSS already zeroed.
-pub unsafe fn kernel_init(boot_info: BootInfo) -> ! {
+pub unsafe fn kernel_boot(boot_info: BootInfo) -> ! {
     if let BootData::DeviceTree(dt) = &boot_info.boot_data {
         let model = unsafe { dt.query().prop("model") }
-            .and_then(|v| {
-                let end = v.iter().position(|&b| b == 0).unwrap_or(v.len());
-                core::str::from_utf8(&v[..end]).ok()
-            })
+            .and_then(|s| CStr::from_bytes_with_nul(s).ok())
+            .and_then(|s| s.to_str().ok())
             .unwrap_or("(unknown)");
         println!("dtb: FDT detected, model = \"{}\"", model);
         unsafe {

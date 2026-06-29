@@ -7,10 +7,10 @@
  *
  *  RISC-V BACKGROUND
  *  On the QEMU virt machine with -bios none -kernel:
- *    • All harts (CPU cores) start in MACHINE mode at address 0x80000000
- *    • The first instruction at 0x80000000 MUST be the entry point (_start)
- *    • hart 0 runs; other harts are parked in boot.s
- *    • No bootloader — the kernel IS the bootloader
+ *    - All harts (CPU cores) start in MACHINE mode at address 0x80000000
+ *    - The first instruction at 0x80000000 MUST be the entry point (_start)
+ *    - hart 0 runs; other harts are parked in boot.s
+ *    - No bootloader — the kernel IS the bootloader
  *  ============================================================================
  */
 
@@ -44,9 +44,9 @@ MEMORY
  *  PT_LOAD = a segment that gets loaded into memory.
  *  On bare metal these are mostly informational; QEMU's -kernel loads the
  *  entire flat binary anyway. But they matter for:
- *    • Debuggers (GDB)
- *    • objcopy --strip-all (creates the .img from the ELF)
- *    • Linker relaxation / GP-relative addressing
+ *    - Debuggers (GDB)
+ *    - objcopy --strip-all (creates the .img from the ELF)
+ *    - Linker relaxation / GP-relative addressing
  * ------------------------------------------------------------------------- */
 PHDRS
 {
@@ -84,9 +84,6 @@ SECTIONS
     KEEP(*(.text.init))            /* Collect ALL .text.init input sections */
     . = ALIGN(4);
   } >ram AT>ram :text              /* Place in "ram" memory; "text" segment */
-  /*    ↑     ↑↑                       │          │
-   *    │     VMA = LMA (no relocation) │          └── ELF program header
-   *    └── output section name         └── ":text" PHDR */
 
   /* ========================================================================
    *  .text — Main kernel code

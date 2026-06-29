@@ -455,7 +455,7 @@ mod tests {
     }
 
     fn qemu_fdt() -> Fdt {
-        Fdt::new(QEMU_VIRT_DTB.as_ptr() as usize)
+        Fdt::new(PA(QEMU_VIRT_DTB.as_ptr() as usize))
     }
 
     fn query(fdt: &Fdt) -> FdtWalker<'_> {
