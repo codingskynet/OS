@@ -13,7 +13,7 @@ RUSTFLAGS := \
 	-C link-arg=--script=$(LINKER_SCRIPT) \
 	-C link-arg=--no-relax
 
-.PHONY: all setup build image run clean fmt clippy test check
+.PHONY: all setup build image run clean fmt clippy typos test check
 
 all: build image
 
@@ -47,7 +47,10 @@ fmt:
 clippy:
 	cargo clippy --target=$(ARCH)
 
+typos:
+	typos
+
 test:
 	cargo test --lib
 
-check: fmt clippy test
+check: fmt clippy typos test
