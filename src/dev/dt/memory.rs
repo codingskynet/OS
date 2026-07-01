@@ -1,5 +1,19 @@
 use crate::dev::dt::{Fdt, FdtToken};
 
+/// Locate the first `memory` node in the device tree and return its `reg`
+/// property together with the address/size cell counts for `/`.
+///
+/// # Safety
+///
+/// The `fdt` must point to a valid, complete FDT blob that remains readable for
+/// the entire call. In particular:
+///
+/// * The pointer stored inside `fdt` must point to a correctly laid-out FDT blob
+///   whose header fields (offsets, sizes) describe memory within that blob.
+/// * The blob must not be mutated or deallocated while this function runs.
+/// * The `reg` property value slice returned to the caller borrows from the FDT
+///   blob — the caller must not deallocate the blob before it is done with the
+///   value.
 pub unsafe fn find_memory_reg(fdt: &Fdt) -> Option<(&[u8], u32, u32)> {
     unsafe {
         let mut node_name = None;
