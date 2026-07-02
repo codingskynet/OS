@@ -69,7 +69,7 @@ pub fn install_from_fdt(fdt: &Fdt) -> Result<(), Error> {
     for (name, value) in walker.props() {
         match name {
             "compatible" => compatible = Some(value.as_str_or_err()?),
-            "reg" => reg = Some(value.as_reg(address_cells, size_cells)),
+            "reg" => reg = Some(value.into_reg(address_cells, size_cells)),
             _ => {}
         }
     }
@@ -99,7 +99,7 @@ pub fn install_from_fdt(fdt: &Fdt) -> Result<(), Error> {
 #[extend::ext]
 impl<'a> prop::Value<'a> {
     fn as_str_or_err(self) -> Result<&'a str, Error> {
-        prop::Value::as_str(self).ok_or(Error::InvalidValue)
+        prop::Value::into_str(self).ok_or(Error::InvalidValue)
     }
 }
 

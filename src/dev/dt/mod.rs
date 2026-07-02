@@ -30,6 +30,12 @@ pub struct FdtHeader {
 }
 
 impl FdtHeader {
+    /// Create a view over an FDT header.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that `ptr` points to a readable FDT header and
+    /// that the backing memory is not mutated while this [`FdtHeader`] is used.
     pub unsafe fn new(ptr: *const u8) -> Self {
         Self { ptr }
     }
@@ -67,6 +73,17 @@ pub struct Fdt {
 }
 
 impl Fdt {
+    /// Create a flattened device-tree view from the start of an FDT blob.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee:
+    ///
+    /// * `ptr` points to a valid FDT header and backing blob.
+    /// * The whole blob remains readable and is not mutated while any [`Fdt`]
+    ///   or [`FdtWalker`] derived from it is used.
+    /// * The header offsets and sizes describe readable regions inside the
+    ///   same blob.
     pub unsafe fn new(ptr: *const u8) -> Self {
         let header = unsafe { FdtHeader::new(ptr) };
         Self { ptr, header }
@@ -94,6 +111,13 @@ impl Fdt {
         walker
     }
 
+    /// Start walking the FDT structure block from the root node.
+    ///
+    /// # Safety
+    ///
+    /// This method relies on the safety contract of [`Fdt::new`]: the FDT
+    /// pointer must still refer to a readable, immutable blob whose structure
+    /// and strings blocks are within bounds.
     pub fn query(&self) -> FdtWalker<'_> {
         unsafe {
             let len = self.header.size_dt_struct() as usize;
@@ -372,7 +396,7 @@ mod tests {
             .filter_map(|token| match token {
                 FdtToken::Prop { name, value } => Some(Prop {
                     name,
-                    value: value.as_slice(),
+                    value: value.into_slice(),
                 }),
                 _ => None,
             })
@@ -446,7 +470,7 @@ mod tests {
             .prop("reg")
             .expect("serial@10000000 should have a reg property");
 
-        let mut it = reg.as_reg(address_cells, size_cells);
+        let mut it = reg.into_reg(address_cells, size_cells);
         let (addr, size) = it.next().expect("should yield one reg tuple");
         assert_eq!(addr, 0x10000000);
         assert_eq!(size, Some(0x100));
@@ -464,7 +488,7 @@ mod tests {
             .prop("reg")
             .expect("flash should have a reg property");
 
-        let tuples: Vec<_> = reg.as_reg(address_cells, size_cells).collect();
+        let tuples: Vec<_> = reg.into_reg(address_cells, size_cells).collect();
         assert_eq!(tuples.len(), 2);
         assert_eq!(tuples[0], (0x20000000, Some(0x02000000)));
         assert_eq!(tuples[1], (0x22000000, Some(0x02000000)));

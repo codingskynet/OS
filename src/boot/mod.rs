@@ -31,12 +31,12 @@ pub enum BootData {
 /// It must be called with a valid stack pointer and BSS already zeroed.
 pub unsafe fn kernel_boot(boot_info: BootInfo) {
     unsafe {
-        let metadata = match &boot_info.boot_data {
+        match &boot_info.boot_data {
             BootData::DeviceTree(fdt) => {
                 let model = fdt
                     .query()
                     .prop("model")
-                    .and_then(prop::Value::as_str)
+                    .and_then(prop::Value::into_str)
                     .unwrap_or("(unknown)");
                 println!("dtb: FDT detected, model = \"{}\"", model);
                 if let Err(e) = console::install_from_fdt(fdt) {
@@ -44,15 +44,15 @@ pub unsafe fn kernel_boot(boot_info: BootInfo) {
                 }
 
                 let mut allocator =
-                    BumpAllocator::new(&fdt).expect("Failed to init PhysicalAllocator");
-                crate::arch::init_page_table(&fdt, || {
+                    BumpAllocator::new(fdt).expect("Failed to init PhysicalAllocator");
+                crate::arch::init_page_table(fdt, || {
                     allocator
                         .alloc_uninit()
                         .expect("Failed to allocate PageTable")
                 });
-                init_page_metadata(allocator)
+                init_page_metadata(allocator);
             }
-        };
+        }
 
         dump_page_list();
 

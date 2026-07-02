@@ -53,13 +53,13 @@ impl<'a> Iterator for MemoryIter<'a> {
                     }
                     FdtToken::Prop { name, value } if is_node && depth == 1 => match name {
                         "device_type" => {
-                            if value.as_slice() == b"memory\0" {
+                            if value.into_slice() == b"memory\0" {
                                 is_memory = true;
                             }
                         }
                         "reg" => {
                             let (address_cells, size_cells) = walker.reg_cells();
-                            reg = Some(value.as_reg(address_cells, size_cells));
+                            reg = Some(value.into_reg(address_cells, size_cells));
                         }
                         _ => {}
                     },

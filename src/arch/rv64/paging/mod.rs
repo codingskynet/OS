@@ -139,7 +139,7 @@ pub fn init_page_table(fdt: &Fdt, mut alloc: impl FnMut() -> &'static mut MaybeU
 
     // create direct map for physical RAM section(QEMU: 0x8000_0000 ~)
     {
-        let regs = MemoryIter::new(&fdt);
+        let regs = MemoryIter::new(fdt);
         for (addr, size) in regs {
             let region = Region::from_size(Pa::new(addr as usize), size).unwrap();
             let mut pa = region.start.align_down(PAGE_SIZE);
