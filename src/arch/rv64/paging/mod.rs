@@ -9,17 +9,14 @@ use page_table::{PageTable, PteFlags, SATP_MODE_SV39, ppn, vpn0, vpn1, vpn2};
 
 use super::consts::*;
 use crate::console::{CONSOLE, Console};
+use crate::dev::dt::Fdt;
+use crate::dev::dt::memory::MemoryIter;
 use crate::dev::uart::ns16550::NS16550;
 use crate::mm::addr::{Pa, Va};
+use crate::mm::region::Region;
 use crate::util::consts::{G, M};
 
-pub unsafe fn enable_mmu_and_jump(
-    entry: usize,
-    hart_id: usize,
-    dtb_pa: usize,
-    memory_start: Pa,
-    memory_end: Pa,
-) -> ! {
+pub unsafe fn enable_mmu_and_jump(entry: usize, hart_id: usize, dtb_ptr: *const u8) -> ! {
     const L2_PAGE_SIZE: NonZeroUsize = NonZeroUsize::new(1 * G).unwrap();
     const L1_PAGE_SIZE: NonZeroUsize = NonZeroUsize::new(2 * M).unwrap();
 
@@ -29,6 +26,9 @@ pub unsafe fn enable_mmu_and_jump(
     static mut TEMP_KERNEL_L1: PageTable = PageTable::new();
 
     unsafe {
+        let fdt = Fdt::new(dtb_ptr);
+        let regs = MemoryIter::new(&fdt);
+
         // Build a temporary bootstrap address space:
         // - identity RAM map for the instructions immediately after satp
         // - linear direct map for early physical access after the jump
@@ -41,19 +41,22 @@ pub unsafe fn enable_mmu_and_jump(
 
         // create direct map for physical RAM section(QEMU: 0x8000_0000 ~)
         {
-            let mut pa = memory_start.align_down(L2_PAGE_SIZE);
-            while pa < memory_end {
-                // identical mapping
-                (*root)
-                    .entry(vpn2(Va::new(pa.as_raw())))
-                    .mut_address(pa)
-                    .mut_flags(flag);
-                // direct mapping
-                (*root)
-                    .entry(vpn2(pa.into_va()))
-                    .mut_address(pa)
-                    .mut_flags(flag);
-                pa = pa.checked_offset(L2_PAGE_SIZE.get()).unwrap();
+            for (addr, size) in regs {
+                let region = Region::from_size(Pa::new(addr as usize), size).unwrap();
+                let mut pa = region.start.align_down(L2_PAGE_SIZE);
+                while pa < region.end {
+                    // identical mapping
+                    (*root)
+                        .entry(vpn2(Va::new(pa.as_raw())))
+                        .mut_address(pa)
+                        .mut_flags(flag);
+                    // direct mapping
+                    (*root)
+                        .entry(vpn2(pa.into_va()))
+                        .mut_address(pa)
+                        .mut_flags(flag);
+                    pa = pa.checked_offset(L2_PAGE_SIZE.get()).unwrap();
+                }
             }
         }
 
@@ -110,18 +113,14 @@ pub unsafe fn enable_mmu_and_jump(
             in("t0") entry,
             in("t1") KERNEL_VMA_OFFSET,
             in("a0") hart_id,
-            in("a1") dtb_pa,
+            in("a1") dtb_ptr,
             clobber_abi("C"),
             options(noreturn),
         );
     }
 }
 
-pub unsafe fn init_page_table(
-    start: Pa,
-    end: Pa,
-    mut alloc: impl FnMut() -> &'static mut MaybeUninit<PageTable>,
-) {
+pub fn init_page_table(fdt: &Fdt, mut alloc: impl FnMut() -> &'static mut MaybeUninit<PageTable>) {
     fn map(
         l2: &mut PageTable,
         va: Va,
@@ -139,22 +138,30 @@ pub unsafe fn init_page_table(
     let flags = PteFlags::V | PteFlags::R | PteFlags::W | PteFlags::X | PteFlags::A | PteFlags::D;
 
     // create direct map for physical RAM section(QEMU: 0x8000_0000 ~)
-    let mut pa = start;
-    while pa < end {
-        map(root, pa.into_va(), &mut alloc, flags);
-        pa = pa.checked_offset(PAGE_SIZE.get()).unwrap();
+    {
+        let regs = MemoryIter::new(&fdt);
+        for (addr, size) in regs {
+            let region = Region::from_size(Pa::new(addr as usize), size).unwrap();
+            let mut pa = region.start.align_down(PAGE_SIZE);
+            while pa < region.end {
+                map(root, pa.into_va(), &mut alloc, flags);
+                pa = pa.checked_offset(PAGE_SIZE.get()).unwrap();
+            }
+        }
     }
 
     // create kernel map starting from KERNEL_VMA_BASE
-    let mut va = Va::new(&raw const _kernel_start as usize);
-    assert_eq!(
-        va, KERNEL_VMA_BASE,
-        "kernel binary does not start from {KERNEL_VMA_BASE:#x}"
-    );
-    let kernel_end = Va::new((&raw const _kernel_end) as usize);
-    while va < kernel_end {
-        map(root, va, &mut alloc, flags);
-        va = va.checked_offset(PAGE_SIZE.get()).unwrap();
+    {
+        let mut va = Va::new(&raw const _kernel_start as usize);
+        assert_eq!(
+            va, KERNEL_VMA_BASE,
+            "kernel binary does not start from {KERNEL_VMA_BASE:#x}"
+        );
+        let kernel_end = Va::new((&raw const _kernel_end) as usize);
+        while va < kernel_end {
+            map(root, va, &mut alloc, flags);
+            va = va.checked_offset(PAGE_SIZE.get()).unwrap();
+        }
     }
 
     // TODO: generalize from reading FDT with MMIO_MAP_ADDR

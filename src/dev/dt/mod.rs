@@ -1,12 +1,19 @@
 pub mod memory;
+pub mod prop;
 
 use core::ffi::CStr;
 use core::{slice, str};
 
+use arrayvec::ArrayVec;
+pub use prop::reg::RegIter;
 use winnow::binary::be_u32;
 use winnow::error::{ContextError, ErrMode, FromExternalError};
 use winnow::token::{take, take_until};
 use winnow::{ModalResult, Parser, Stateful};
+
+use crate::dev::dt::prop::Value;
+
+const DEFAULT_CELLS: (u32, u32) = (2, 1);
 
 // Safety: the caller must ensure `buf.offset(offset)..buf.offset(offset + 4)` is readable.
 unsafe fn be32(buf: *const u8, offset: isize) -> u32 {
@@ -17,79 +24,51 @@ unsafe fn be32(buf: *const u8, offset: isize) -> u32 {
 }
 
 // https://github.com/devicetree-org/devicetree-specification/blob/main/source/chapter5-flattened-format.rst
+#[derive(Clone, Copy)]
 pub struct FdtHeader {
     ptr: *const u8,
 }
 
 impl FdtHeader {
-    pub fn new(ptr: *const u8) -> Self {
+    pub unsafe fn new(ptr: *const u8) -> Self {
         Self { ptr }
     }
 
-    /// Magic number (`0xd00dfeed`) at offset 0.
-    ///
-    /// # Safety
-    ///
-    /// `self.ptr` must point to a readable FDT header.
-    pub unsafe fn magic(&self) -> u32 {
+    pub fn magic(&self) -> u32 {
         unsafe { be32(self.ptr, 0) }
     }
 
-    /// Total size of the FDT blob in bytes.
-    ///
-    /// # Safety
-    ///
-    /// `self.ptr` must point to a readable FDT header.
-    pub unsafe fn total_size(&self) -> u32 {
+    pub fn total_size(&self) -> u32 {
         unsafe { be32(self.ptr, 4) }
     }
 
-    /// Offset of the structure block from the start of the FDT blob.
-    ///
-    /// # Safety
-    ///
-    /// `self.ptr` must point to a readable FDT header.
-    pub unsafe fn off_dt_struct(&self) -> u32 {
+    pub fn off_dt_struct(&self) -> u32 {
         unsafe { be32(self.ptr, 8) }
     }
 
-    /// Offset of the strings block from the start of the FDT blob.
-    ///
-    /// # Safety
-    ///
-    /// `self.ptr` must point to a readable FDT header.
-    pub unsafe fn off_dt_strings(&self) -> u32 {
+    pub fn off_dt_strings(&self) -> u32 {
         unsafe { be32(self.ptr, 12) }
     }
 
-    /// Size of the strings block in bytes.
-    ///
-    /// # Safety
-    ///
-    /// `self.ptr` must point to a readable FDT header.
-    pub unsafe fn size_dt_strings(&self) -> u32 {
+    pub fn size_dt_strings(&self) -> u32 {
         unsafe { be32(self.ptr, 32) }
     }
 
-    /// Size of the structure block in bytes.
-    ///
-    /// # Safety
-    ///
-    /// `self.ptr` must point to a readable FDT header.
-    pub unsafe fn size_dt_struct(&self) -> u32 {
+    pub fn size_dt_struct(&self) -> u32 {
         unsafe { be32(self.ptr, 36) }
     }
 }
 
 // TODO: Since it uses **raw pointer**, so unsafe. Need to split unsafe FDT(no allocation) and safe FDT(allocation)
+#[derive(Clone, Copy)]
 pub struct Fdt {
     ptr: *const u8,
     header: FdtHeader,
 }
 
 impl Fdt {
-    pub fn new(ptr: *const u8) -> Self {
-        let header = FdtHeader::new(ptr);
+    pub unsafe fn new(ptr: *const u8) -> Self {
+        let header = unsafe { FdtHeader::new(ptr) };
         Self { ptr, header }
     }
 
@@ -102,8 +81,8 @@ impl Fdt {
     /// # Safety
     ///
     /// See [`Fdt::query`].
-    pub unsafe fn lookup(&self, path: &str) -> FdtWalker<'_> {
-        let mut walker = unsafe { self.query() };
+    pub fn lookup(&self, path: &str) -> FdtWalker<'_> {
+        let mut walker = self.query();
 
         let trimmed = path.strip_prefix('/').unwrap_or(path);
         if trimmed.is_empty() {
@@ -115,55 +94,7 @@ impl Fdt {
         walker
     }
 
-    /// Resolve `#address-cells` and `#size-cells` for a device at `path`.
-    ///
-    /// Walks up the tree from `path` to find the nearest ancestor (or self) that
-    /// defines these properties.  Returns the **reg specifier** per the Devicetree
-    /// spec v0.4 §2.3.5: `(#address-cells, #size-cells)` with defaults `(2, 1)`.
-    ///
-    /// # Safety
-    ///
-    /// See [`Fdt::query`].
-    pub unsafe fn reg_cells(&self, path: &str) -> (u32, u32) {
-        // We walk the parent chain by chopping off path components.
-        let mut address_cells = None;
-        let mut size_cells = None;
-        let mut p: &str = path;
-
-        loop {
-            let walker = unsafe { self.lookup(p) };
-            for (name, value) in walker.props() {
-                match name {
-                    "#address-cells" if address_cells.is_none() => {
-                        address_cells = value.try_into().ok().map(u32::from_be_bytes);
-                    }
-                    "#size-cells" if size_cells.is_none() => {
-                        size_cells = value.try_into().ok().map(u32::from_be_bytes);
-                    }
-                    _ => {}
-                }
-            }
-            if address_cells.is_some() && size_cells.is_some() {
-                break;
-            }
-            // Move to parent path
-            p = match p.rsplit_once('/') {
-                Some(("", _)) => "/", // reached root
-                Some((parent, _)) => parent,
-                None => break,
-            };
-        }
-
-        (address_cells.unwrap_or(2), size_cells.unwrap_or(1))
-    }
-
-    /// Returns a walker over the FDT structure block.
-    ///
-    /// # Safety
-    ///
-    /// The pointer passed to [`Fdt::new`] must point to a complete, readable FDT
-    /// blob whose header offsets and sizes describe memory inside that blob.
-    pub unsafe fn query(&self) -> FdtWalker<'_> {
+    pub fn query(&self) -> FdtWalker<'_> {
         unsafe {
             let len = self.header.size_dt_struct() as usize;
             let struct_ptr = self.ptr.offset(self.header.off_dt_struct() as isize);
@@ -180,6 +111,7 @@ impl Fdt {
                         strings_slice,
                         len,
                         depth: 0,
+                        cells: ArrayVec::new(),
                     },
                 },
                 end_depth: 0,
@@ -191,6 +123,7 @@ impl Fdt {
     }
 }
 
+#[derive(Clone)]
 pub struct FdtWalker<'a> {
     stream: Stateful<&'a [u8], FdtWalkerState<'a>>,
     end_depth: usize,
@@ -198,8 +131,19 @@ pub struct FdtWalker<'a> {
 }
 
 impl<'a> FdtWalker<'a> {
-    pub fn depth(&self) -> usize {
+    fn depth(&self) -> usize {
         self.stream.state.depth
+    }
+
+    /// Returns the `#address-cells` and `#size-cells` values used to decode a
+    /// `reg` property on the current node.
+    pub fn reg_cells(&self) -> (u32, u32) {
+        let cells = &self.stream.state.cells;
+        cells
+            .len()
+            .checked_sub(2)
+            .and_then(|index| cells.get(index).copied())
+            .unwrap_or(DEFAULT_CELLS)
     }
 
     /// Move to the next node with this local name inside the current walk range.
@@ -229,7 +173,7 @@ impl<'a> FdtWalker<'a> {
     ///
     /// Only properties of the **current** node are searched; child node data is
     /// not traversed.
-    pub fn prop(mut self, name: &str) -> Option<&'a [u8]> {
+    pub fn prop(mut self, name: &str) -> Option<Value<'a>> {
         let mut depth = 0;
         for token in self.by_ref() {
             match token {
@@ -249,11 +193,12 @@ impl<'a> FdtWalker<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FdtWalkerState<'a> {
     strings_slice: &'a [u8],
     len: usize,
     depth: usize,
+    cells: ArrayVec<(u32, u32), 16>,
 }
 
 const FDT_BEGIN_NODE: u32 = 1;
@@ -266,7 +211,7 @@ const FDT_END: u32 = 9;
 pub enum FdtToken<'a> {
     Node(&'a str),
     NodeEnd,
-    Prop { name: &'a str, value: &'a [u8] },
+    Prop { name: &'a str, value: Value<'a> },
 }
 
 impl<'a> Iterator for FdtWalker<'a> {
@@ -305,6 +250,30 @@ impl<'a> Iterator for FdtWalker<'a> {
             ctx_err!(input, str::from_utf8(str))
         }
 
+        fn parse_u32(
+            input: &mut Stateful<&[u8], FdtWalkerState>,
+            value: &[u8],
+        ) -> ModalResult<u32> {
+            ctx_err!(input, value.try_into().map(u32::from_be_bytes))
+        }
+
+        fn parse_props(
+            input: &mut Stateful<&[u8], FdtWalkerState>,
+            name: &str,
+            value: &[u8],
+        ) -> ModalResult<()> {
+            match name {
+                "#address-cells" => {
+                    input.state.cells.last_mut().unwrap().0 = parse_u32(input, value)?;
+                }
+                "#size-cells" => {
+                    input.state.cells.last_mut().unwrap().1 = parse_u32(input, value)?;
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+
         fn parse_event<'a>(
             input: &mut Stateful<&'a [u8], FdtWalkerState<'a>>,
         ) -> ModalResult<Option<FdtToken<'a>>> {
@@ -312,6 +281,7 @@ impl<'a> Iterator for FdtWalker<'a> {
                 let token = be_u32.parse_next(input)?;
                 match token {
                     FDT_BEGIN_NODE => {
+                        input.state.cells.push(DEFAULT_CELLS);
                         input.state.depth += 1;
                         let name = parse_cstr.parse_next(input)?;
                         align4(input)?;
@@ -321,6 +291,7 @@ impl<'a> Iterator for FdtWalker<'a> {
                         if input.state.depth == 0 {
                             return Err(ErrMode::Cut(ContextError::new()));
                         }
+                        input.state.cells.pop();
                         input.state.depth -= 1;
                         return Ok(Some(FdtToken::NodeEnd));
                     }
@@ -329,9 +300,13 @@ impl<'a> Iterator for FdtWalker<'a> {
                         let nameoff = be_u32.parse_next(input)?;
                         let value = take(len).parse_next(input)?;
                         align4(input)?;
+
+                        let name = resolve_name(input, nameoff)?;
+                        parse_props(input, name, value)?;
+
                         return Ok(Some(FdtToken::Prop {
-                            name: resolve_name(input, nameoff)?,
-                            value,
+                            name,
+                            value: Value::new(value),
                         }));
                     }
                     FDT_NOP => {}
@@ -358,7 +333,7 @@ impl<'a> Iterator for FdtWalker<'a> {
 pub struct FdtPropWalker<'a>(FdtWalker<'a>);
 
 impl<'a> Iterator for FdtPropWalker<'a> {
-    type Item = (&'a str, &'a [u8]);
+    type Item = (&'a str, Value<'a>);
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut depth = 0;
@@ -371,73 +346,6 @@ impl<'a> Iterator for FdtPropWalker<'a> {
                 _ => {}
             }
         }
-    }
-}
-
-/// Parse a big-endian cell value of `bytes` width (1 or 2 cells = 4 or 8 bytes).
-///
-/// Returns `u64` zero-extended.
-fn read_cell_be(buf: &[u8], bytes: usize) -> Option<u64> {
-    if buf.len() < bytes {
-        return None;
-    }
-    match bytes {
-        4 => Some(u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as u64),
-        8 => Some(u64::from_be_bytes([
-            buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
-        ])),
-        _ => None,
-    }
-}
-
-/// Iterator over `(address, size)` tuples decoded from a DTB `reg` property.
-///
-/// `address_cells` and `size_cells` are inherited from the parent node's
-/// `#address-cells` and `#size-cells` properties (defaults: 2 and 1).
-pub struct RegIter<'a> {
-    data: &'a [u8],
-    stride: usize,
-    address_len: usize,
-    size_len: usize,
-}
-
-impl<'a> RegIter<'a> {
-    /// Create a new `RegIter`.
-    ///
-    /// * `reg` — raw bytes of the `reg` property.
-    /// * `address_cells` — value of the parent's `#address-cells`.
-    /// * `size_cells` — value of the parent's `#size-cells`.
-    pub fn new(reg: &'a [u8], address_cells: u32, size_cells: u32) -> Self {
-        let address_len = address_cells as usize * 4;
-        let size_len = size_cells as usize * 4;
-        Self {
-            data: reg,
-            stride: address_len + size_len,
-            address_len,
-            size_len,
-        }
-    }
-}
-
-impl<'a> Iterator for RegIter<'a> {
-    /// `(address, size)` — size is `None` when `#size-cells = 0`.
-    type Item = (u64, Option<u64>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.data.is_empty() || self.data.len() < self.address_len {
-            return None;
-        }
-        let address = read_cell_be(self.data, self.address_len)?;
-        let (size, consumed) = if self.size_len > 0 {
-            (
-                Some(read_cell_be(&self.data[self.address_len..], self.size_len)?),
-                self.stride,
-            )
-        } else {
-            (None, self.address_len)
-        };
-        self.data = &self.data[consumed..];
-        Some((address, size))
     }
 }
 
@@ -456,17 +364,16 @@ mod tests {
     }
 
     fn qemu_fdt() -> Fdt {
-        Fdt::new(QEMU_VIRT_DTB.as_ptr())
-    }
-
-    fn query(fdt: &Fdt) -> FdtWalker<'_> {
-        unsafe { fdt.query() }
+        unsafe { Fdt::new(QEMU_VIRT_DTB.as_ptr()) }
     }
 
     fn collect_props<'a>(walker: FdtWalker<'a>) -> Vec<Prop<'a>> {
         walker
             .filter_map(|token| match token {
-                FdtToken::Prop { name, value } => Some(Prop { name, value }),
+                FdtToken::Prop { name, value } => Some(Prop {
+                    name,
+                    value: value.as_slice(),
+                }),
                 _ => None,
             })
             .collect()
@@ -475,16 +382,14 @@ mod tests {
     #[test]
     fn qemu_virt_header_matches_binary() {
         let fdt = qemu_fdt();
-        let header = unsafe {
-            [
-                fdt.header.magic(),
-                fdt.header.total_size(),
-                fdt.header.off_dt_struct(),
-                fdt.header.off_dt_strings(),
-                fdt.header.size_dt_strings(),
-                fdt.header.size_dt_struct(),
-            ]
-        };
+        let header = [
+            fdt.header.magic(),
+            fdt.header.total_size(),
+            fdt.header.off_dt_struct(),
+            fdt.header.off_dt_strings(),
+            fdt.header.size_dt_strings(),
+            fdt.header.size_dt_struct(),
+        ];
 
         assert_eq!(
             header,
@@ -504,7 +409,7 @@ mod tests {
         let fdt = qemu_fdt();
 
         assert_eq!(
-            collect_props(query(&fdt).at("chosen")).as_slice(),
+            collect_props(fdt.query().at("chosen")).as_slice(),
             &[
                 Prop {
                     name: "stdout-path",
@@ -522,7 +427,7 @@ mod tests {
         );
 
         assert_eq!(
-            collect_props(query(&fdt).at("cpus").at("cpu-map")).as_slice(),
+            collect_props(fdt.query().at("cpus").at("cpu-map")).as_slice(),
             &[Prop {
                 name: "cpu",
                 value: &[0, 0, 0, 1],
@@ -535,13 +440,13 @@ mod tests {
         // serial@10000000 has reg = <0x0 0x10000000 0x0 0x100>
         // under soc where #address-cells=2, #size-cells=2
         let fdt = qemu_fdt();
-        let reg = query(&fdt)
-            .at("soc")
-            .at("serial@10000000")
+        let walker = fdt.query().at("soc").at("serial@10000000");
+        let (address_cells, size_cells) = walker.reg_cells();
+        let reg = walker
             .prop("reg")
             .expect("serial@10000000 should have a reg property");
 
-        let mut it = RegIter::new(reg, 2, 2);
+        let mut it = reg.as_reg(address_cells, size_cells);
         let (addr, size) = it.next().expect("should yield one reg tuple");
         assert_eq!(addr, 0x10000000);
         assert_eq!(size, Some(0x100));
@@ -553,12 +458,13 @@ mod tests {
         // flash@20000000 has two reg tuples
         // #address-cells=2, #size-cells=2 from root
         let fdt = qemu_fdt();
-        let reg = query(&fdt)
-            .at("flash@20000000")
+        let walker = fdt.query().at("flash@20000000");
+        let (address_cells, size_cells) = walker.reg_cells();
+        let reg = walker
             .prop("reg")
             .expect("flash should have a reg property");
 
-        let tuples: Vec<_> = RegIter::new(reg, 2, 2).collect();
+        let tuples: Vec<_> = reg.as_reg(address_cells, size_cells).collect();
         assert_eq!(tuples.len(), 2);
         assert_eq!(tuples[0], (0x20000000, Some(0x02000000)));
         assert_eq!(tuples[1], (0x22000000, Some(0x02000000)));
@@ -583,30 +489,52 @@ mod tests {
     }
 
     #[test]
-    fn reg_cells_serial_inherits_from_soc() {
+    fn walker_reg_cells_serial_uses_soc_cells() {
         // serial@10000000 is under /soc, which sets #address-cells=2, #size-cells=2
         let fdt = qemu_fdt();
-        let (ac, sc) = unsafe { fdt.reg_cells("/soc/serial@10000000") };
-        assert_eq!(ac, 2);
-        assert_eq!(sc, 2);
+        let walker = fdt.query().at("soc").at("serial@10000000");
+        assert_eq!(walker.reg_cells(), (2, 2));
     }
 
     #[test]
-    fn reg_cells_soc_explicit() {
+    fn walker_reg_cells_soc_uses_root_cells() {
         let fdt = qemu_fdt();
-        let (ac, sc) = unsafe { fdt.reg_cells("/soc") };
-        assert_eq!(ac, 2);
-        assert_eq!(sc, 2);
+        let walker = fdt.query().at("soc");
+        assert_eq!(walker.reg_cells(), (2, 2));
     }
 
     #[test]
-    fn reg_cells_root_defaults() {
+    fn walker_reg_cells_root_defaults() {
         // root itself might not have #address-cells/#size-cells
-        // (QEMU virt root doesn't set them explicitly)
         let fdt = qemu_fdt();
-        let (ac, sc) = unsafe { fdt.reg_cells("/") };
-        // QEMU virt root actually has #address-cells=2, #size-cells=2
-        assert_eq!(ac, 2);
-        assert_eq!(sc, 2);
+        assert_eq!(fdt.query().reg_cells(), (2, 1));
+    }
+
+    #[test]
+    fn walker_reg_cells_update_after_props_are_parsed() {
+        let fdt = qemu_fdt();
+        let mut walker = fdt.query();
+        assert_eq!(walker.reg_cells(), (2, 1));
+
+        assert!(matches!(
+            walker.next(),
+            Some(FdtToken::Prop {
+                name: "#address-cells",
+                ..
+            })
+        ));
+        assert_eq!(walker.reg_cells(), (2, 1));
+
+        assert!(matches!(
+            walker.next(),
+            Some(FdtToken::Prop {
+                name: "#size-cells",
+                ..
+            })
+        ));
+        assert_eq!(walker.reg_cells(), (2, 1));
+
+        let flash = walker.at("flash@20000000");
+        assert_eq!(flash.reg_cells(), (2, 2));
     }
 }

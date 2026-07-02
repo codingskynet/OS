@@ -1,56 +1,119 @@
-use crate::dev::dt::{Fdt, FdtToken};
+use core::num::NonZeroUsize;
 
-/// Locate the first `memory` node in the device tree and return its `reg`
-/// property together with the address/size cell counts for `/`.
-///
-/// # Safety
-///
-/// The `fdt` must point to a valid, complete FDT blob that remains readable for
-/// the entire call. In particular:
-///
-/// * The pointer stored inside `fdt` must point to a correctly laid-out FDT blob
-///   whose header fields (offsets, sizes) describe memory within that blob.
-/// * The blob must not be mutated or deallocated while this function runs.
-/// * The `reg` property value slice returned to the caller borrows from the FDT
-///   blob — the caller must not deallocate the blob before it is done with the
-///   value.
-pub unsafe fn find_memory_reg(fdt: &Fdt) -> Option<(&[u8], u32, u32)> {
-    unsafe {
-        let mut node_name = None;
-        let mut reg = None;
-        let mut is_memory = false;
+use crate::dev::dt::prop::reg::RegIter;
+use crate::dev::dt::{Fdt, FdtToken, FdtWalker};
 
-        for token in fdt.query() {
-            match token {
-                FdtToken::Node(name) => {
-                    if name.split('@').next() == Some("memory") {
-                        node_name = Some(name);
-                        is_memory = true;
-                        reg = None;
-                    } else if node_name.is_some() {
-                        node_name = None;
-                        is_memory = false;
-                        reg = None;
+pub struct MemoryIter<'a> {
+    walker: FdtWalker<'a>,
+    reg_iter: Option<RegIter<'a>>,
+}
+
+impl<'a> MemoryIter<'a> {
+    pub fn new(fdt: &'a Fdt) -> Self {
+        Self {
+            walker: fdt.query(),
+            reg_iter: None,
+        }
+    }
+}
+
+impl<'a> Iterator for MemoryIter<'a> {
+    type Item = (u64, NonZeroUsize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        fn find_memory<'a>(walker: &mut FdtWalker<'a>) -> Option<RegIter<'a>> {
+            let mut depth = 0;
+            let mut is_node = false;
+            let mut is_memory = false;
+            let mut reg = None;
+
+            while let Some(token) = walker.next() {
+                match token {
+                    FdtToken::Node(name) => {
+                        if depth == 0 && name.split('@').next() == Some("memory") {
+                            is_node = true;
+                            reg = None;
+                        }
+                        depth += 1;
                     }
-                }
-                FdtToken::Prop { name, value } if node_name.is_some() => match name {
-                    "device_type" if value == b"memory\0" => is_memory = true,
-                    "reg" => reg = Some(value),
+                    FdtToken::NodeEnd => {
+                        if depth == 0 {
+                            return None;
+                        }
+
+                        if is_node && depth == 1 {
+                            if is_memory && reg.is_some() {
+                                return reg;
+                            }
+                            is_node = false;
+                            is_memory = false;
+                            reg = None;
+                        }
+                        depth -= 1;
+                    }
+                    FdtToken::Prop { name, value } if is_node && depth == 1 => match name {
+                        "device_type" => {
+                            if value.as_slice() == b"memory\0" {
+                                is_memory = true;
+                            }
+                        }
+                        "reg" => {
+                            let (address_cells, size_cells) = walker.reg_cells();
+                            reg = Some(value.as_reg(address_cells, size_cells));
+                        }
+                        _ => {}
+                    },
                     _ => {}
-                },
-                FdtToken::NodeEnd if node_name.is_some() => {
-                    if is_memory && let Some(reg) = reg {
-                        let (ac, sc) = fdt.reg_cells("/");
-                        return Some((reg, ac, sc));
-                    }
-                    node_name = None;
-                    is_memory = false;
-                    reg = None;
                 }
-                _ => {}
             }
+
+            None
         }
 
-        None
+        loop {
+            if let Some((addr, Some(size))) = self.reg_iter.as_mut().and_then(Iterator::next)
+                && let Some(size) = NonZeroUsize::new(size as usize)
+            {
+                return Some((addr, size));
+            }
+
+            self.reg_iter = Some(find_memory(&mut self.walker)?);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::vec::Vec;
+
+    use super::*;
+
+    static QEMU_VIRT_DTB: &[u8] = include_bytes!("test_data/qemu_virt.dtb");
+
+    fn qemu_fdt() -> Fdt {
+        unsafe { Fdt::new(QEMU_VIRT_DTB.as_ptr()) }
+    }
+
+    #[test]
+    fn qemu_virt_memory_iter_finds_ram() {
+        let fdt = qemu_fdt();
+
+        let ranges: Vec<_> = MemoryIter::new(&fdt)
+            .map(|(addr, size)| (addr, size.get()))
+            .collect();
+
+        assert_eq!(ranges, [(0x80000000, 0x08000000)]);
+    }
+
+    #[test]
+    fn qemu_virt_memory_iter_returns_none_after_last_range() {
+        let fdt = qemu_fdt();
+        let mut iter = MemoryIter::new(&fdt);
+
+        assert_eq!(
+            iter.next().map(|(addr, size)| (addr, size.get())),
+            Some((0x80000000, 0x08000000))
+        );
+        assert_eq!(iter.next(), None);
     }
 }

@@ -1,23 +1,32 @@
-use core::ffi::CStr;
 use core::fmt::{self, Write};
 use core::{ptr, str};
 
-use crate::dev::dt::{Fdt, RegIter};
+use crate::dev::dt::{Fdt, prop};
 use crate::dev::uart::ns16550::NS16550;
 use crate::mm::addr::Pa;
 use crate::util::Global;
 
-/// Prints without a newline.
 #[macro_export]
 macro_rules! print {
     ($($arg:tt)*) => ($crate::console::_print(format_args!($($arg)*)));
 }
 
-/// Prints with a newline.
 #[macro_export]
 macro_rules! println {
     () => ($crate::print!("\n"));
     ($($arg:tt)*) => ({
+        $crate::console::_print(format_args!("{}\n", format_args!($($arg)*)));
+    })
+}
+
+#[macro_export]
+macro_rules! debug {
+   () => (
+        #[cfg(debug_assertions)]
+        $crate::print!("\n")
+    );
+    ($($arg:tt)*) => ({
+        #[cfg(debug_assertions)]
         $crate::console::_print(format_args!("{}\n", format_args!($($arg)*)));
     })
 }
@@ -42,55 +51,55 @@ impl Write for Console {
     }
 }
 
-/// Parse `stdout-path` from `/chosen` and install the matching console driver.
-///
-/// # Safety
-///
-/// `fdt` must point to a valid, readable Flattened Device Tree blob.
-pub unsafe fn install_from_fdt(fdt: &Fdt) -> Result<(), Error> {
-    unsafe {
-        let Some(stdout_path) = fdt.query().at("chosen").prop("stdout-path") else {
-            return Err(Error::NotFound);
-        };
-        let stdout_path = CStr::from_bytes_until_nul(stdout_path)?.to_str()?;
+pub fn install_from_fdt(fdt: &Fdt) -> Result<(), Error> {
+    let value = fdt
+        .query()
+        .at("chosen")
+        .prop("stdout-path")
+        .ok_or(Error::NotFound)?;
+    let stdout_path = value.as_str_or_err()?;
 
-        // strip optional colon+options suffix, e.g. "/soc/serial@10000000:57600"
-        let path = stdout_path.split(':').next().unwrap_or("");
+    // strip optional colon+options suffix, e.g. "/soc/serial@10000000:57600"
+    let path = stdout_path.split(':').next().ok_or(Error::NotFound)?;
 
-        let mut compatible = None;
-        let mut reg = None;
-        for (name, value) in fdt.lookup(path).props() {
-            match name {
-                "compatible" => compatible = Some(value),
-                "reg" => reg = Some(value),
-                _ => {}
-            }
+    let mut compatible = None;
+    let mut reg = None;
+    let walker = fdt.lookup(path);
+    let (address_cells, size_cells) = walker.reg_cells();
+    for (name, value) in walker.props() {
+        match name {
+            "compatible" => compatible = Some(value.as_str_or_err()?),
+            "reg" => reg = Some(value.as_reg(address_cells, size_cells)),
+            _ => {}
         }
+    }
 
-        let Some((compatible, reg)) = compatible.zip(reg) else {
-            return Err(Error::NotFound);
-        };
-        let compatible = CStr::from_bytes_until_nul(compatible)?;
+    let (compatible, mut reg) = compatible.zip(reg).ok_or(Error::NotFound)?;
 
-        // install console for known devices
-        if [c"ns16550", c"ns16550a"].contains(&compatible) {
-            let (ac, sc) = fdt.reg_cells(path);
-            let (base, _size) = RegIter::new(reg, ac, sc).next().ok_or(Error::NotFound)?;
+    // install console for known devices
+    if ["ns16550", "ns16550a"].contains(&compatible) {
+        let (base, _size) = reg.next().ok_or(Error::NotFound)?;
 
+        unsafe {
             ptr::write(
                 CONSOLE.0.get(),
                 Console::Ns16550(NS16550::new(Pa::new(base as usize).into_va().as_raw())),
             );
-
-            println!(
-                "dtb: console {} @ {:#x} (compatible: {})",
-                path,
-                base,
-                compatible.to_str().unwrap_or_default(),
-            );
         }
 
-        Ok(())
+        println!(
+            "dtb: console {} @ {:#x} (compatible: {})",
+            path, base, compatible,
+        );
+    }
+
+    Ok(())
+}
+
+#[extend::ext]
+impl<'a> prop::Value<'a> {
+    fn as_str_or_err(self) -> Result<&'a str, Error> {
+        prop::Value::as_str(self).ok_or(Error::InvalidValue)
     }
 }
 
@@ -98,8 +107,6 @@ pub unsafe fn install_from_fdt(fdt: &Fdt) -> Result<(), Error> {
 pub enum Error {
     #[error("Not found")]
     NotFound,
-    #[error("Invalid c string")]
-    InvalidCStr(#[from] core::ffi::FromBytesUntilNulError),
-    #[error("Invalid utf8")]
-    InvalidUtf8(#[from] str::Utf8Error),
+    #[error("Invalid value")]
+    InvalidValue,
 }
