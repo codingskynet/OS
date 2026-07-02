@@ -1,10 +1,11 @@
 use core::fmt::{self, Write};
+use core::ops::DerefMut;
 use core::{ptr, str};
 
 use crate::dev::dt::{Fdt, prop};
 use crate::dev::uart::ns16550::NS16550;
 use crate::mm::addr::Pa;
-use crate::util::Global;
+use crate::sync::SpinLock;
 
 #[macro_export]
 macro_rules! print {
@@ -32,10 +33,10 @@ macro_rules! debug {
 }
 
 pub fn _print(args: fmt::Arguments) {
-    CONSOLE.as_mut().write_fmt(args).unwrap();
+    CONSOLE.lock().write_fmt(args).unwrap();
 }
 
-pub static CONSOLE: Global<Console> = Global::new(Console::Ns16550(NS16550::new(
+pub static CONSOLE: SpinLock<Console> = SpinLock::new(Console::Ns16550(NS16550::new(
     Pa::new(0x1000_0000).as_raw(),
 )));
 
@@ -82,7 +83,7 @@ pub fn install_from_fdt(fdt: &Fdt) -> Result<(), Error> {
 
         unsafe {
             ptr::write(
-                CONSOLE.0.get(),
+                CONSOLE.lock().deref_mut(),
                 Console::Ns16550(NS16550::new(Pa::new(base as usize).into_va().as_raw())),
             );
         }

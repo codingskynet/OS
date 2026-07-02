@@ -56,13 +56,14 @@ pub unsafe fn kernel_boot(boot_info: BootInfo) {
 
         dump_page_list();
 
-        BUDDY.as_mut().initialize();
-        println!("{:#?}", BUDDY.as_mut());
+        BUDDY.lock().initialize();
+        println!("{:#?}", *BUDDY.lock());
         kernel_init();
     }
 }
 
 fn init_page_metadata(mut allocator: BumpAllocator) {
+    let mut page_meta_map = PAGE_META_MAP.lock();
     for memory in allocator.memories_mut() {
         let region = memory.region();
         let offset = region.start.align_down(PAGE_SIZE).as_raw() / PAGE_SIZE;
@@ -91,6 +92,6 @@ fn init_page_metadata(mut allocator: BumpAllocator) {
             }
         }
         let section = PageMetaSection::new(page_meta, offset, region);
-        PAGE_META_MAP.as_mut().add(section);
+        page_meta_map.add(section);
     }
 }

@@ -1,5 +1,4 @@
 use core::fmt::Debug;
-use core::mem;
 use core::num::NonZeroUsize;
 use core::ptr::NonNull;
 
@@ -11,6 +10,9 @@ pub struct BuddyAllocator {
     // nodes for 4KiB, 8KiB, 16KiB, ..., 2MiB
     heads: [Option<NonNull<PageMeta>>; 10],
 }
+
+// TODO
+unsafe impl Send for BuddyAllocator {}
 
 impl BuddyAllocator {
     pub const fn empty() -> Self {
@@ -41,7 +43,7 @@ impl BuddyAllocator {
             max_order
         }
 
-        for section in PAGE_META_MAP.as_mut().sections_mut() {
+        for section in PAGE_META_MAP.lock().sections_mut() {
             let pages = section.page_metas_mut();
             let mut i = 0;
             while i < pages.len() {
@@ -74,8 +76,13 @@ impl BuddyAllocator {
     }
 
     fn pop(&mut self, order: usize) -> Option<NonNull<PageMeta>> {
-        let next = unsafe { self.heads[order]?.as_ref().next };
-        mem::replace(&mut self.heads[order], next)
+        let mut page = self.heads[order]?;
+        unsafe {
+            let p = page.as_mut();
+            self.heads[order] = p.next.take();
+            p.status = Status::Reserved;
+            Some(page)
+        }
     }
 
     fn push(&mut self, order: usize, mut page: NonNull<PageMeta>) {
@@ -109,7 +116,7 @@ impl BuddyAllocator {
                     .checked_offset(PAGE_SIZE.get() * (1 << current_order))
                     .unwrap();
                 let buddy = PAGE_META_MAP
-                    .as_mut()
+                    .lock()
                     .page_meta_mut(buddy_addr)
                     .map(NonNull::from)
                     .expect("Buddy page metadata not found");

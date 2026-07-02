@@ -3,6 +3,7 @@ mod page_table;
 use core::arch::asm;
 use core::mem::MaybeUninit;
 use core::num::NonZeroUsize;
+use core::ops::DerefMut;
 use core::ptr;
 
 use page_table::{PageTable, PteFlags, SATP_MODE_SV39, ppn, vpn0, vpn1, vpn2};
@@ -92,7 +93,7 @@ pub unsafe fn enable_mmu_and_jump(entry: usize, hart_id: usize, dtb_ptr: *const 
                 .mut_address(page)
                 .mut_flags(flag);
             ptr::write(
-                CONSOLE.as_mut(),
+                CONSOLE.lock().deref_mut(),
                 Console::Ns16550(NS16550::new(console.into_va().as_raw())),
             );
         }
@@ -169,7 +170,7 @@ pub fn init_page_table(fdt: &Fdt, mut alloc: impl FnMut() -> &'static mut MaybeU
     map(root, uart, &mut alloc, flags);
     unsafe {
         ptr::write(
-            CONSOLE.as_mut(),
+            CONSOLE.lock().deref_mut(),
             Console::Ns16550(NS16550::new(uart.as_raw())),
         );
     }

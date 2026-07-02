@@ -1,5 +1,4 @@
 #![allow(clippy::identity_op)]
-#![allow(unused)]
 #![no_main]
 #![no_std]
 
@@ -11,4 +10,5 @@ mod init;
 mod kernel;
 mod mm;
 mod panic;
+mod sync;
 mod util;

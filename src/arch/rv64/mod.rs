@@ -8,6 +8,7 @@
 
 pub use paging::init_page_table;
 
+pub mod asm;
 pub mod consts;
 mod paging;
 
