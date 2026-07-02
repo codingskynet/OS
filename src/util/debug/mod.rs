@@ -5,7 +5,7 @@ use crate::mm::page::{PageMetaSection, Status};
 use crate::println;
 
 pub fn dump_page_list() {
-    let page_meta_map = PAGE_META_MAP.as_mut();
+    let page_meta_map = PAGE_META_MAP.lock();
     let sections = page_meta_map.sections();
 
     if sections.is_empty() {

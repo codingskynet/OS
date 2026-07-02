@@ -7,18 +7,19 @@ pub mod slab;
 use core::alloc::{GlobalAlloc, Layout};
 
 use crate::mm::buddy::BuddyAllocator;
-use crate::mm::page::{PageMetaMap, PageMetaSection};
+use crate::mm::page::PageMetaMap;
 use crate::mm::slab::SlabAllocator;
-use crate::util::Global;
+use crate::sync::SpinLock;
 
-pub static PAGE_META_MAP: Global<PageMetaMap> = Global::new(PageMetaMap::empty());
+pub static PAGE_META_MAP: SpinLock<PageMetaMap> = SpinLock::new(PageMetaMap::empty());
 
-pub static BUDDY: Global<BuddyAllocator> = Global::new(BuddyAllocator::empty());
+pub static BUDDY: SpinLock<BuddyAllocator> = SpinLock::new(BuddyAllocator::empty());
 
-// #[global_allocator]
-pub static GLOBAL: Global<Allocator> = Global::new(Allocator::new());
+#[global_allocator]
+pub static GLOBAL: Allocator = Allocator::new();
 
 pub struct Allocator {
+    // TODO: All slab allocators must be per core
     slabs: [SlabAllocator; 8],
 }
 

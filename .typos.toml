@@ -7,6 +7,10 @@
 "REG_THR" = "REG_THR"
 "LSR_THRE" = "LSR_THRE"
 
+# RISC-V status register bit names
+"SIE" = "SIE"
+"sie" = "sie"
+
 [files]
 extend-exclude = [
   "Cargo.lock",

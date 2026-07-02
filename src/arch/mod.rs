@@ -4,6 +4,8 @@
 //! and implements the traits defined here so the rest of the kernel can be
 //! architecture-agnostic.
 
+pub mod interrupt;
+
 #[cfg(feature = "rv64")]
 pub mod rv64;
 #[cfg(feature = "rv64")]

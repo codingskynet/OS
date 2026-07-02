@@ -87,6 +87,21 @@ pub struct PageMeta {
     pub next: Option<NonNull<PageMeta>>,
 }
 
+// TODO
+
+// SAFETY: `next` is an intrusive free-list link into the page metadata storage
+// allocated during boot. That storage lives for the rest of the kernel, and the
+// links are only followed or mutated while the owning allocator state is locked.
+// Moving a `PageMeta` value between harts therefore does not by itself create
+// unsynchronized access to the pointed-to metadata.
+unsafe impl Send for PageMeta {}
+
+// SAFETY: shared references to `PageMeta` may expose the intrusive `next`
+// pointer, but following or mutating that pointer is still controlled by the
+// allocator/page-metadata locks. The pointer targets boot-allocated metadata
+// that remains valid for the kernel lifetime.
+unsafe impl Sync for PageMeta {}
+
 impl PageMeta {
     pub const fn free(addr: Pa) -> Self {
         Self {

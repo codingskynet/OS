@@ -11,4 +11,5 @@ mod init;
 mod kernel;
 mod mm;
 mod panic;
+mod sync;
 mod util;
