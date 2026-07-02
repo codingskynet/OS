@@ -14,8 +14,7 @@ mod paging;
 use core::arch::global_asm;
 
 use crate::boot::{BootData, BootInfo};
-use crate::dev::dt::memory::find_memory_reg;
-use crate::dev::dt::{Fdt, RegIter};
+use crate::dev::dt::Fdt;
 use crate::mm::addr::Pa;
 
 global_asm!(include_str!("boot.s"));
@@ -44,34 +43,17 @@ global_asm!(include_str!("boot.s"));
 ///
 /// The only reliable debug tool available here is `panic!()`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn _start_rust(hart_id: usize, dtb_ptr: Pa) -> ! {
-    unsafe {
-        let fdt = Fdt::new(dtb_ptr.as_raw() as *const u8);
-        let (reg, ac, sc) = find_memory_reg(&fdt).expect("No memory");
-        let (memory_start, memory_size) = RegIter::new(reg, ac, sc)
-            .filter_map(|reg| match reg {
-                (addr, Some(size)) => Some((addr as usize, size as usize)),
-                _ => None,
-            })
-            .next()
-            .expect("No memory");
-        paging::enable_mmu_and_jump(
-            after_mmu as *const () as usize,
-            hart_id,
-            dtb_ptr.as_raw(),
-            Pa::new(memory_start),
-            Pa::new(memory_start + memory_size),
-        );
-    }
+pub unsafe extern "C" fn _start_rust(hart_id: usize, dtb_ptr: *const u8) -> ! {
+    unsafe { paging::enable_mmu_and_jump(after_mmu as *const () as usize, hart_id, dtb_ptr) }
 }
 
-unsafe extern "C" fn after_mmu(hart_id: usize, dtb_pa: usize) -> ! {
-    let boot_info = BootInfo {
-        boot_cpu_id: hart_id,
-        boot_data: BootData::DeviceTree(Fdt::new(Pa::new(dtb_pa).into_va().as_ptr())),
-    };
-
+unsafe extern "C" fn after_mmu(hart_id: usize, dtb_ptr: Pa) -> ! {
     unsafe {
+        let boot_info = BootInfo {
+            boot_cpu_id: hart_id,
+            boot_data: BootData::DeviceTree(Fdt::new(dtb_ptr.into_va().as_ptr())),
+        };
+
         crate::boot::kernel_boot(boot_info);
     }
 

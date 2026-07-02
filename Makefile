@@ -1,9 +1,24 @@
 ARCH      ?= riscv64gc-unknown-none-elf
 LINKER_SCRIPT := src/arch/rv64/kernel.ld
 
-TARGET_DIR := target/$(ARCH)/release
+DEBUG ?= 0
+
+ifeq ($(DEBUG),1)
+PROFILE       := debug
+KERNEL_IMG    := kernel-debug.img
+CARGO_FLAGS   :=
+OBJCOPY_FLAGS :=
+PROFILE_RUSTFLAGS := -C opt-level=1 # prevent large usage of stack and abosolute jump table
+else
+PROFILE       := release
+KERNEL_IMG    := kernel.img
+CARGO_FLAGS   := --release
+OBJCOPY_FLAGS := --strip-all
+PROFILE_RUSTFLAGS :=
+endif
+
+TARGET_DIR := target/$(ARCH)/$(PROFILE)
 KERNEL_ELF := $(TARGET_DIR)/kernel
-KERNEL_IMG := kernel.img
 
 MEMORY     := 64M
 
@@ -22,12 +37,10 @@ setup:
 	@scripts/setup.sh
 
 build:
-	RUSTFLAGS="$(RUSTFLAGS)" cargo rustc \
-		--target=$(ARCH) \
-		--release
+	RUSTFLAGS="$(RUSTFLAGS) $(PROFILE_RUSTFLAGS)" cargo rustc --target=$(ARCH) $(CARGO_FLAGS)
 
 image: build
-	rust-objcopy --strip-all -O binary $(KERNEL_ELF) $(KERNEL_IMG)
+	rust-objcopy $(OBJCOPY_FLAGS) -O binary $(KERNEL_ELF) $(KERNEL_IMG)
 
 run: image
 	qemu-system-riscv64 \
@@ -38,7 +51,7 @@ run: image
 		-kernel $(KERNEL_IMG)
 
 clean:
-	rm -f $(KERNEL_IMG)
+	rm -f kernel.img kernel-debug.img
 	cargo clean
 
 fmt:

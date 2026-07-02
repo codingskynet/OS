@@ -33,7 +33,7 @@ fn fmt_addr(f: &mut fmt::Formatter<'_>, addr: usize) -> fmt::Result {
 
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, derive_more::Debug)]
-#[debug("Pa({})", self.0)]
+#[debug("Pa({})", self)]
 pub struct Pa(usize);
 
 impl Pa {
@@ -74,7 +74,7 @@ impl fmt::Display for Pa {
 
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, derive_more::Debug)]
-#[debug("Va({})", self.0)]
+#[debug("Va({})", self)]
 pub struct Va(usize);
 
 impl<T> From<&T> for Va {

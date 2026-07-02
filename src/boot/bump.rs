@@ -1,4 +1,3 @@
-use core::iter::once;
 use core::mem::{self, MaybeUninit};
 use core::num::NonZeroUsize;
 use core::ptr::NonNull;
@@ -7,43 +6,21 @@ use core::slice::{self, Iter};
 use arrayvec::ArrayVec;
 
 use crate::arch::consts::*;
-use crate::mm::addr::{Pa, Va};
+use crate::dev::dt::Fdt;
+use crate::dev::dt::memory::MemoryIter;
+use crate::mm::addr::Pa;
+use crate::mm::region::Region;
+use crate::{debug, println};
 
-pub struct PhysicalAllocator {
-    memory: ArrayVec<Memory, 2>,
-}
+pub trait Alloc {
+    fn alloc_raw(&mut self, size: NonZeroUsize, align: NonZeroUsize) -> Result<Pa, Error>;
 
-impl PhysicalAllocator {
-    pub unsafe fn new(memory: Region) -> Result<Self, Error> {
-        unsafe {
-            let mut memory = ArrayVec::from_iter(once(Memory::new(memory)));
-
-            let mut reserved: ArrayVec<Region, 32> = ArrayVec::new();
-            reserved.push(Region::from_linker_symbols(&_stext, &_etext));
-            reserved.push(Region::from_linker_symbols(&_rodata_start, &_rodata_end));
-            reserved.push(Region::from_linker_symbols(&_data_start, &_data_end));
-            reserved.push(Region::from_linker_symbols(&_bss_start, &_bss_end));
-            // TODO: add reserve-memory from FDT
-            reserved.sort_unstable();
-
-            for r in reserved {
-                for mem in memory.iter_mut() {
-                    if mem.reserve(r).is_ok() {
-                        break;
-                    }
-                }
-            }
-
-            Ok(Self { memory })
-        }
-    }
-
-    pub fn alloc<T>(&mut self, init: impl FnOnce() -> T) -> Result<&'static mut T, Error> {
+    fn alloc<T>(&mut self, init: impl FnOnce() -> T) -> Result<&'static mut T, Error> {
         let ptr = self.alloc_uninit()?;
         Ok(ptr.write(init()))
     }
 
-    pub fn alloc_slice<T>(
+    fn alloc_slice<T>(
         &mut self,
         len: usize,
         init: impl Fn(usize) -> T,
@@ -57,12 +34,12 @@ impl PhysicalAllocator {
         Ok(unsafe { mem::transmute::<&mut [core::mem::MaybeUninit<T>], &mut [T]>(data) })
     }
 
-    pub fn alloc_uninit<T>(&mut self) -> Result<&'static mut MaybeUninit<T>, Error> {
+    fn alloc_uninit<T>(&mut self) -> Result<&'static mut MaybeUninit<T>, Error> {
         let Some(size) = NonZeroUsize::new(mem::size_of::<T>()) else {
             return Ok(unsafe { &mut *NonNull::dangling().as_ptr() });
         };
 
-        let pa = self.alloc_pa(
+        let pa = self.alloc_raw(
             size,
             // Safety: align_of guarantees nonzero.
             mem::align_of::<T>().try_into().unwrap(),
@@ -72,7 +49,7 @@ impl PhysicalAllocator {
         Ok(unsafe { &mut *ptr })
     }
 
-    pub fn alloc_slice_uninit<T>(
+    fn alloc_slice_uninit<T>(
         &mut self,
         len: usize,
     ) -> Result<&'static mut [MaybeUninit<T>], Error> {
@@ -80,7 +57,7 @@ impl PhysicalAllocator {
             return Ok(unsafe { slice::from_raw_parts_mut(NonNull::dangling().as_ptr(), len) });
         };
 
-        let pa = self.alloc_pa(
+        let pa = self.alloc_raw(
             size,
             // Safety: align_of guarantees nonzero.
             mem::align_of::<T>().try_into().unwrap(),
@@ -89,27 +66,88 @@ impl PhysicalAllocator {
 
         Ok(unsafe { slice::from_raw_parts_mut(ptr, len) })
     }
+}
 
-    pub fn alloc_pa(&mut self, size: NonZeroUsize, align: NonZeroUsize) -> Result<Pa, Error> {
-        for mem in self.memory.iter_mut() {
-            if let Ok(region) = mem.alloc(size, align) {
-                return Ok(region.start);
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("Out of memory")]
+    OutOfMemory,
+}
+
+pub struct BumpAllocator {
+    memories: ArrayVec<Memory, 4>,
+}
+
+impl Alloc for BumpAllocator {
+    fn alloc_raw(&mut self, size: NonZeroUsize, align: NonZeroUsize) -> Result<Pa, Error> {
+        for mem in self.memories.iter_mut() {
+            if let Ok(pa) = mem.alloc_raw(size, align) {
+                return Ok(pa);
             }
         }
 
         Err(Error::OutOfMemory)
     }
+}
 
-    pub fn reserved_iter(&self) -> impl Iterator<Item = Region> + '_ {
-        self.memory
-            .iter()
-            .flat_map(|memory| memory.reserved.iter().copied())
+impl BumpAllocator {
+    pub unsafe fn new(fdt: &Fdt) -> Result<Self, Error> {
+        unsafe {
+            let regs = MemoryIter::new(fdt);
+            let mut memory = ArrayVec::from_iter(
+                regs.into_iter()
+                    .map(|(addr, size)| {
+                        let addr = Pa::new(addr as usize);
+                        (addr, addr.checked_offset(size.get()).unwrap())
+                    })
+                    .inspect(|(from, to)| debug!("bump: register memory {from} ~ {to}"))
+                    .map(|(from, to)| Region::new(from, to).unwrap())
+                    .map(Memory::new),
+            );
+
+            let mut reserved: ArrayVec<Region, 32> = ArrayVec::new();
+            reserved.push(Region::from_raw(&_stext, &_etext));
+            reserved.push(Region::from_raw(&_rodata_start, &_rodata_end));
+            reserved.push(Region::from_raw(&_data_start, &_data_end));
+            reserved.push(Region::from_raw(&_bss_start, &_bss_end));
+            // TODO: add reserve-memory from FDT
+            reserved.sort_unstable();
+
+            for r in reserved {
+                debug!("bump: reserve {r:?}");
+                let mut reserved = false;
+                for mem in memory.iter_mut() {
+                    if mem.reserve(r).is_ok() {
+                        reserved = true;
+                        break;
+                    }
+                }
+                if !reserved {
+                    println!("bump: failed to reserve region: {r:?}");
+                }
+            }
+
+            Ok(Self { memories: memory })
+        }
+    }
+
+    pub fn memories_mut(&mut self) -> &mut [Memory] {
+        &mut self.memories
     }
 }
 
 pub struct Memory {
     region: Region,
     reserved: RegionSet<8>,
+}
+
+impl Alloc for Memory {
+    fn alloc_raw(&mut self, size: NonZeroUsize, align: NonZeroUsize) -> Result<Pa, Error> {
+        match self.alloc(size, align) {
+            Ok(region) => Ok(region.start),
+            Err(_) => Err(Error::OutOfMemory),
+        }
+    }
 }
 
 impl Memory {
@@ -120,13 +158,12 @@ impl Memory {
         }
     }
 
-    fn free_iter(&self) -> FreeRegionIterator<'_> {
-        FreeRegionIterator {
-            region: self.region,
-            cursor: self.region.start,
-            reserved: self.reserved.iter(),
-            is_end: false,
-        }
+    pub fn region(&self) -> Region {
+        self.region
+    }
+
+    pub fn reserved(&self) -> &[Region] {
+        self.reserved.as_slice()
     }
 
     pub fn reserve(&mut self, region: Region) -> Result<(), Region> {
@@ -157,42 +194,25 @@ impl Memory {
             Err(())
         }
     }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Region {
-    pub start: Pa,
-    pub end: Pa,
-}
-
-impl Region {
-    fn new(start: Pa, end: Pa) -> Option<Self> {
-        if start < end {
-            Some(Self { start, end })
-        } else {
-            None
+    fn free_iter(&self) -> FreeRegionIterator<'_> {
+        FreeRegionIterator {
+            region: self.region,
+            cursor: self.region.start,
+            reserved: self.reserved.iter(),
+            is_end: false,
         }
-    }
-
-    pub fn from_size(addr: Pa, size: NonZeroUsize) -> Option<Self> {
-        let end = addr.checked_offset(size.into())?;
-        Some(Region { start: addr, end })
-    }
-
-    fn from_linker_symbols(start: *const u8, end: *const u8) -> Self {
-        Self {
-            start: Va::new(start.addr()).into_pa(),
-            end: Va::new(end.addr()).into_pa(),
-        }
-    }
-
-    fn is_collide(&self, other: Region) -> bool {
-        self.start < other.end && other.start < self.end
     }
 }
 
 pub struct RegionSet<const N: usize> {
     regions: ArrayVec<Region, N>,
+}
+
+fn is_overlap(region: Region, other: Option<Region>) -> bool {
+    other
+        .map(|other| region.intersection(other).is_some_and(|r| !r.is_empty()))
+        .unwrap_or(false)
 }
 
 impl<const N: usize> RegionSet<N> {
@@ -202,39 +222,26 @@ impl<const N: usize> RegionSet<N> {
         }
     }
 
-    fn neighbors(&self, region: Region) -> (usize, Option<Region>, Option<Region>) {
-        let index = self
-            .regions
-            .iter()
-            .position(|now| region.start < now.start)
-            .unwrap_or(self.regions.len());
-        let left = index
-            .checked_sub(1)
-            .and_then(|i| self.regions.get(i))
-            .copied();
-        let right = self.regions.get(index).copied();
-        (index, left, right)
+    pub fn as_slice(&self) -> &[Region] {
+        &self.regions
     }
 
     pub fn is_allocable(&self, region: Region) -> bool {
-        if region.start == region.end {
+        if region.is_empty() {
             return true;
         }
 
         let (_, left, right) = self.neighbors(region);
-        !(left.is_some_and(|left| region.is_collide(left))
-            || right.is_some_and(|right| region.is_collide(right)))
+        !is_overlap(region, left) && !is_overlap(region, right)
     }
 
     pub fn alloc(&mut self, region: Region) -> Result<(), Region> {
-        if region.start == region.end {
+        if region.is_empty() {
             return Ok(());
         }
 
         let (index, left, right) = self.neighbors(region);
-        if left.is_some_and(|left| region.is_collide(left))
-            || right.is_some_and(|right| region.is_collide(right))
-        {
+        if is_overlap(region, left) || is_overlap(region, right) {
             return Err(region);
         }
         if let Some(left) = left
@@ -261,13 +268,25 @@ impl<const N: usize> RegionSet<N> {
 
         self.regions
             .try_insert(index, region)
-            .map_err(|e| e.element())?;
-
-        Ok(())
+            .map_err(|e| e.element())
     }
 
     pub fn iter(&self) -> Iter<'_, Region> {
         self.regions.iter()
+    }
+
+    fn neighbors(&self, region: Region) -> (usize, Option<Region>, Option<Region>) {
+        let index = self
+            .regions
+            .iter()
+            .position(|now| region.start < now.start)
+            .unwrap_or(self.regions.len());
+        let left = index
+            .checked_sub(1)
+            .and_then(|i| self.regions.get(i))
+            .copied();
+        let right = self.regions.get(index).copied();
+        (index, left, right)
     }
 }
 
@@ -304,10 +323,4 @@ impl<'a> Iterator for FreeRegionIterator<'a> {
             }
         }
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("Out of memory")]
-    OutOfMemory,
 }

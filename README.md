@@ -5,11 +5,12 @@ The toy project for implementing OS
 ## How to Setup & Build & Run
 
 ```bash
-make setup      # install dependencies including QEMU
-make run        # build + create kernel.img + boot on QEMU
-make build      # build only (ELF)
-make image      # build + create kernel.img
-make clean      # remove artifacts
+make setup          # install dependencies including QEMU
+make run            # build + create kernel.img + boot on QEMU
+make run DEBUG=1    # build debug image + boot on QEMU
+make build          # build only (ELF)
+make image          # build + create kernel.img
+make clean          # remove artifacts
 ```
 
 # Reference
