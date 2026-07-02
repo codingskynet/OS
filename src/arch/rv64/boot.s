@@ -71,7 +71,8 @@
  *
  * ============================================================================ */
 
-.equ STACK_SIZE,     8192
+.equ STACK_SHIFT,    14
+.equ STACK_SIZE,     (1 << STACK_SHIFT)
 .section .text.init, "ax"
 
 /* ---------------------------------------------------------------------------
@@ -87,7 +88,7 @@
 _start:
     # setup stacks per hart
     csrr t0, mhartid                # read current hart id
-    slli t0, t0, 13                 # shift left the hart id by STACK_SIZE (8192 = 2^13)
+    slli t0, t0, STACK_SHIFT        # shift left the hart id by STACK_SIZE
     la   sp, stacks + STACK_SIZE    # set the initial stack pointer
                                     # to the end of the stack space
     add  sp, sp, t0                 # move the current hart stack pointer
