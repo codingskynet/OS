@@ -19,11 +19,19 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
       - name: Install QEMU
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-misc
-          cargo install cargo-binutils
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: qemu-system-misc
+          version: 1.0
+
+      - name: Install cargo-binutils
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binutils
 
       - name: Run allocator fuzz in QEMU
         run: |
