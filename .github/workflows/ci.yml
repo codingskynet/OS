@@ -33,7 +33,7 @@ jobs:
         run: cargo clippy --target=${{ env.ARCH }} --release -- -D warnings
 
       - name: Test (host)
-        run: cargo test --lib
+        run: make test
 
       - name: Check (full build verification)
         run: cargo check --target=${{ env.ARCH }} --release
