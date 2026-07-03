@@ -23,6 +23,9 @@ jobs:
       - name: Install rustfmt toolchain
         run: rustup toolchain install "$(cat .rustfmt-toolchain)" --component rustfmt
 
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
       - name: Spell check (typos)
         uses: crate-ci/typos@v1.48.0
 
@@ -33,7 +36,7 @@ jobs:
         run: cargo clippy --target=${{ env.ARCH }} --release -- -D warnings
 
       - name: Test (host)
-        run: cargo test --lib
+        run: make test
 
       - name: Check (full build verification)
         run: cargo check --target=${{ env.ARCH }} --release
