@@ -13,20 +13,23 @@ endif
 
 ifeq ($(DEBUG),1)
 PROFILE				:= debug
-KERNEL_IMG			:= kernel-debug.img
+KERNEL_BASENAME		:= kernel-debug
 CARGO_FLAGS			:=
 OBJCOPY_FLAGS 		:=
-PROFILE_RUSTFLAGS	:= -C opt-level=1 -C debug-assertions=on # opt-level=1 prevents large usage of stack and abosolute jump table
+PROFILE_RUSTFLAGS	:= -C opt-level=1 -C debug-assertions=on # opt-level=1 prevents large usage of stack and absolute jump table
 else
 PROFILE				:= release
-KERNEL_IMG			:= kernel.img
+KERNEL_BASENAME		:= kernel
 CARGO_FLAGS			:= --release
 OBJCOPY_FLAGS		:= --strip-all $(if $(filter $(HOST_ARCH), riscv64), --target=$(ARCH))
 PROFILE_RUSTFLAGS	:=
 endif
 
 TARGET_DIR := target/$(ARCH)/$(PROFILE)
-KERNEL_ELF := $(TARGET_DIR)/kernel
+KERNEL_ARTIFACT := $(TARGET_DIR)/kernel
+KERNEL_ELF := $(KERNEL_BASENAME).elf
+KERNEL_DEBUG := $(KERNEL_BASENAME).debug
+KERNEL_BIN := $(KERNEL_BASENAME).bin
 
 MEMORY     := 64M
 
@@ -48,7 +51,9 @@ build:
 	RUSTFLAGS="$(RUSTFLAGS) $(PROFILE_RUSTFLAGS)" cargo rustc --target=$(ARCH) $(CARGO_FLAGS) $(FEATURE_FLAGS)
 
 image: build
-	rust-objcopy $(OBJCOPY_FLAGS) -O binary $(KERNEL_ELF) $(KERNEL_IMG)
+	cp $(KERNEL_ARTIFACT) $(KERNEL_ELF)
+	rust-objcopy --only-keep-debug $(KERNEL_ARTIFACT) $(KERNEL_DEBUG)
+	rust-objcopy $(OBJCOPY_FLAGS) -O binary $(KERNEL_ARTIFACT) $(KERNEL_BIN)
 
 run: image
 	qemu-system-riscv64 \
@@ -56,10 +61,10 @@ run: image
 		-m $(MEMORY) \
 		-nographic \
 		-bios none \
-		-kernel $(KERNEL_IMG)
+		-kernel $(KERNEL_BIN)
 
 clean:
-	rm -f kernel.img kernel-debug.img
+	rm -f kernel.bin kernel-debug.bin kernel.elf kernel-debug.elf kernel.debug kernel-debug.debug
 	cargo clean
 
 fmt:
