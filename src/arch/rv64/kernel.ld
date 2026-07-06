@@ -103,12 +103,12 @@ SECTIONS
   . = ALIGN(4);
   .text.init KERNEL_VMA_BASE : AT(KERNEL_LMA_BASE)
   {
-    _stext = .;                    /* "." = current location counter */
+    _text_start = .;                    /* "." = current location counter */
     KEEP(*(.text.init))            /* Collect ALL .text.init input sections */
     . = ALIGN(4);
   } :text
 
-  ASSERT(_stext == KERNEL_VMA_BASE,
+  ASSERT(_text_start == KERNEL_VMA_BASE,
          "_start must be the first byte in the linked kernel image")
   ASSERT(LOADADDR(.text.init) == KERNEL_LMA_BASE,
          ".text.init must load at the QEMU virt reset address")
@@ -124,7 +124,7 @@ SECTIONS
    *  Without ".*", inline functions or #[inline(always)] items placed in
    *  separate subsections by the compiler would be MISSED.
    *
-   *  _etext marks the end of code. Useful for:
+   *  _text_end marks the end of code. Useful for:
    *    - Calculating code size
    *    - Setting up MMU permissions (RX vs RW)
    *    - Self-checks / integrity hashing
@@ -134,7 +134,7 @@ SECTIONS
   {
     *(.text .text.*)
     . = ALIGN(4);
-    _etext = .;
+    _text_end = .;
   } :text
 
   /* ========================================================================
@@ -152,8 +152,9 @@ SECTIONS
     _rodata_start = .;
     *(.rodata .rodata.*)
     . = ALIGN(4);
-    _rodata_end = .;
   } :text
+  . = ALIGN(4096);
+  _rodata_end = .;
 
   /* ========================================================================
    *  .data — Writable data (initialized globals / statics)
@@ -170,7 +171,6 @@ SECTIONS
    *
    *  _data_start / _data_end: boundaries for cache maintenance, hashing.
    * ======================================================================== */
-  . = ALIGN(4096);
   .data : AT(ADDR(.data) - KERNEL_VMA_OFFSET)
   {
     _data_start = .;
@@ -200,8 +200,41 @@ SECTIONS
     *(.sbss .sbss.*)
     *(.bss .bss.*)
     . = ALIGN(4);
-    _bss_end = .;
   } :bss
+  . = ALIGN(4096);
+  _bss_end = .;
 
   _kernel_end = .;
+
+  .debug_abbrev 0 : { *(.debug_abbrev) *(.debug_abbrev.*) }
+  .debug_addr 0 : { *(.debug_addr) *(.debug_addr.*) }
+  .debug_aranges 0 : { *(.debug_aranges) *(.debug_aranges.*) }
+  .debug_frame 0 : { *(.debug_frame) *(.debug_frame.*) }
+  .debug_info 0 : { *(.debug_info .debug_info.*) }
+  .debug_line 0 : { *(.debug_line) *(.debug_line.*) }
+  .debug_line_str 0 : { *(.debug_line_str) *(.debug_line_str.*) }
+  .debug_loc 0 : { *(.debug_loc) *(.debug_loc.*) }
+  .debug_loclists 0 : { *(.debug_loclists) *(.debug_loclists.*) }
+  .debug_macro 0 : { *(.debug_macro) *(.debug_macro.*) }
+  .debug_names 0 : { *(.debug_names) *(.debug_names.*) }
+  .debug_pubnames 0 : { *(.debug_pubnames) *(.debug_pubnames.*) }
+  .debug_pubtypes 0 : { *(.debug_pubtypes) *(.debug_pubtypes.*) }
+  .debug_ranges 0 : { *(.debug_ranges) *(.debug_ranges.*) }
+  .debug_rnglists 0 : { *(.debug_rnglists) *(.debug_rnglists.*) }
+  .debug_str 0 : { *(.debug_str) *(.debug_str.*) }
+  .debug_str_offsets 0 : { *(.debug_str_offsets) *(.debug_str_offsets.*) }
+
+  .riscv.attributes 0 : { *(.riscv.attributes) }
+
+  .symtab 0 : { *(.symtab) }
+  .strtab 0 : { *(.strtab) }
+  .shstrtab 0 : { *(.shstrtab) }
+
+  .comment 0 : { *(.comment) }
+
+  /DISCARD/ : {
+    *(.eh_frame)
+    *(.eh_frame.*)
+    *(.eh_frame_hdr)
+  }
 }

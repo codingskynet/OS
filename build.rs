@@ -2,6 +2,7 @@ include!("src/arch/rv64/consts.rs");
 
 fn main() {
     println!("cargo:rerun-if-changed=src/arch/rv64/consts.rs");
+    println!("cargo:rerun-if-changed=src/arch/rv64/kernel.ld");
 
     // Use rustc-link-arg-bin to restrict these linker symbols to the "kernel"
     // binary only. This prevents them from leaking into lib.rs builds (e.g.

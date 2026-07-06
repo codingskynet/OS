@@ -8,8 +8,8 @@ use consts::*;
 
 unsafe extern "C" {
     pub static _kernel_start: u8;
-    pub static _stext: u8;
-    pub static _etext: u8;
+    pub static _text_start: u8;
+    pub static _text_end: u8;
     pub static _rodata_start: u8;
     pub static _rodata_end: u8;
     pub static _data_start: u8;

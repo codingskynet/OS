@@ -6,6 +6,7 @@ use core::slice::{self, Iter};
 use arrayvec::ArrayVec;
 
 use crate::arch::consts::*;
+use crate::arch::{self};
 use crate::dev::dt::Fdt;
 use crate::dev::dt::memory::MemoryIter;
 use crate::mm::addr::Pa;
@@ -101,10 +102,10 @@ impl BumpAllocator {
             );
 
             let mut reserved: ArrayVec<Region, 32> = ArrayVec::new();
-            reserved.push(Region::from_raw(&_stext, &_etext));
-            reserved.push(Region::from_raw(&_rodata_start, &_rodata_end));
-            reserved.push(Region::from_raw(&_data_start, &_data_end));
-            reserved.push(Region::from_raw(&_bss_start, &_bss_end));
+            reserved.push(arch::region::text());
+            reserved.push(arch::region::rodata());
+            reserved.push(arch::region::data());
+            reserved.push(arch::region::bss());
             reserved.push(Region::from_raw(
                 fdt.as_ptr(),
                 fdt.as_ptr().wrapping_add(fdt.total_size()),
