@@ -2,21 +2,36 @@ use core::fmt::{self, Write};
 use core::ops::DerefMut;
 use core::{ptr, str};
 
-use crate::dev::dt::{Fdt, prop};
+use crate::dev::dt::Fdt;
 use crate::dev::uart::ns16550::NS16550;
+use crate::kernel::dt;
+use crate::kernel::dt::{FdtWalkeraExt, ValueaExt};
+use crate::kernel::sync::SpinLock;
 use crate::mm::addr::Pa;
-use crate::sync::SpinLock;
 
 #[macro_export]
-macro_rules! print {
-    ($($arg:tt)*) => ($crate::console::_print(format_args!($($arg)*)));
+macro_rules! printk {
+    ($($arg:tt)*) => ($crate::kernel::console::_print(format_args!($($arg)*)));
 }
 
 #[macro_export]
-macro_rules! println {
-    () => ($crate::print!("\n"));
+macro_rules! printlnk {
+    () => ({
+        let us = $crate::kernel::clock::clock_micros();
+        $crate::kernel::console::_print(format_args!(
+            "[{:>5}.{:06}]\n",
+            us / $crate::util::consts::MICROS_PER_SEC,
+            us % $crate::util::consts::MICROS_PER_SEC,
+        ));
+    });
     ($($arg:tt)*) => ({
-        $crate::console::_print(format_args!("{}\n", format_args!($($arg)*)));
+        let us = $crate::kernel::clock::clock_micros();
+        $crate::kernel::console::_print(format_args!(
+            "[{:>5}.{:06}] {}\n",
+            us / $crate::util::consts::MICROS_PER_SEC,
+            us % $crate::util::consts::MICROS_PER_SEC,
+            format_args!($($arg)*),
+        ));
     })
 }
 
@@ -24,11 +39,11 @@ macro_rules! println {
 macro_rules! debug {
    () => (
         #[cfg(debug_assertions)]
-        $crate::print!("\n")
+        $crate::printlnk!()
     );
     ($($arg:tt)*) => ({
         #[cfg(debug_assertions)]
-        $crate::console::_print(format_args!("{}\n", format_args!($($arg)*)));
+        $crate::printlnk!($($arg)*);
         #[cfg(not(debug_assertions))]
         let _ = format_args!($($arg)*);
     })
@@ -55,15 +70,11 @@ impl Write for Console {
 }
 
 pub fn install_from_fdt(fdt: &Fdt) -> Result<(), Error> {
-    let value = fdt
-        .query()
-        .at("chosen")
-        .prop("stdout-path")
-        .ok_or(Error::NotFound)?;
-    let stdout_path = value.as_str_or_err()?;
+    let value = fdt.query().at("chosen").prop_or_err("stdout-path")?;
+    let stdout_path = value.into_str_or_err()?;
 
     // strip optional colon+options suffix, e.g. "/soc/serial@10000000:57600"
-    let path = stdout_path.split(':').next().ok_or(Error::NotFound)?;
+    let path = stdout_path.split(':').next().ok_or(Error::InvalidPath)?;
 
     let mut compatible = None;
     let mut reg = None;
@@ -71,17 +82,17 @@ pub fn install_from_fdt(fdt: &Fdt) -> Result<(), Error> {
     let (address_cells, size_cells) = walker.reg_cells();
     for (name, value) in walker.props() {
         match name {
-            "compatible" => compatible = Some(value.as_str_or_err()?),
+            "compatible" => compatible = Some(value.into_str_or_err()?),
             "reg" => reg = Some(value.into_reg(address_cells, size_cells)),
             _ => {}
         }
     }
 
-    let (compatible, mut reg) = compatible.zip(reg).ok_or(Error::NotFound)?;
+    let (compatible, mut reg) = compatible.zip(reg).ok_or(Error::InvalidMmio)?;
 
     // install console for known devices
     if ["ns16550", "ns16550a"].contains(&compatible) {
-        let (base, _size) = reg.next().ok_or(Error::NotFound)?;
+        let (base, _size) = reg.next().ok_or(Error::InvalidMmio)?;
 
         unsafe {
             ptr::write(
@@ -90,26 +101,23 @@ pub fn install_from_fdt(fdt: &Fdt) -> Result<(), Error> {
             );
         }
 
-        println!(
+        printlnk!(
             "dtb: console {} @ {:#x} (compatible: {})",
-            path, base, compatible,
+            path,
+            base,
+            compatible,
         );
     }
 
     Ok(())
 }
 
-#[extend::ext]
-impl<'a> prop::Value<'a> {
-    fn as_str_or_err(self) -> Result<&'a str, Error> {
-        prop::Value::into_str(self).ok_or(Error::InvalidValue)
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("Not found")]
-    NotFound,
-    #[error("Invalid value")]
-    InvalidValue,
+    #[error("device tree error")]
+    Dt(#[from] dt::Error),
+    #[error("invalid path")]
+    InvalidPath,
+    #[error("invalid mmio")]
+    InvalidMmio,
 }

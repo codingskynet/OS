@@ -1,6 +1,10 @@
 use core::num::NonZeroUsize;
 
-include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/util/consts.rs"));
+#[allow(clippy::module_inception, unused)]
+mod consts {
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/util/consts.rs"));
+}
+use consts::*;
 
 unsafe extern "C" {
     pub static _kernel_start: u8;

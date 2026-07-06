@@ -58,7 +58,7 @@ impl Pa {
     }
 
     pub const fn into_va(self) -> Va {
-        Va(self.0.checked_add(DIRECT_VMA_BASE).expect("Invalid Pa"))
+        Va(self.0.checked_add(DIRECT_VMA_BASE).expect("invalid Pa"))
     }
 
     pub const fn as_raw(&self) -> usize {

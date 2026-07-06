@@ -9,10 +9,10 @@ use core::ptr;
 use page_table::{PageTable, PteFlags, SATP_MODE_SV39, ppn, vpn0, vpn1, vpn2};
 
 use super::consts::*;
-use crate::console::{CONSOLE, Console};
 use crate::dev::dt::Fdt;
 use crate::dev::dt::memory::MemoryIter;
 use crate::dev::uart::ns16550::NS16550;
+use crate::kernel::console::{CONSOLE, Console};
 use crate::mm::addr::{Pa, Va};
 use crate::mm::region::Region;
 use crate::util::consts::{G, M};
@@ -103,7 +103,7 @@ pub unsafe fn enable_mmu_and_jump(entry: usize, hart_id: usize, dtb_ptr: *const 
         asm!("csrw satp, {}", in(reg) satp, options(nostack, preserves_flags));
         asm!("sfence.vma zero, zero", options(nostack, preserves_flags));
 
-        let entry = entry.checked_add(KERNEL_VMA_OFFSET).expect("Invalid entry");
+        let entry = entry.checked_add(KERNEL_VMA_OFFSET).expect("invalid entry");
 
         // Enter the high-kernel world without returning through the low-address
         // call stack. The temporary identity map exists only to execute the
