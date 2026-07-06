@@ -1,4 +1,4 @@
-use crate::println;
+use crate::printlnk;
 
 pub fn kernel_init() {
     #[cfg(feature = "fuzz-allocator")]
@@ -7,11 +7,11 @@ pub fn kernel_init() {
         use crate::mm::BUDDY;
 
         dump_page_list();
-        println!("{:#?}", *BUDDY.lock());
+        printlnk!("{:#?}", *BUDDY.lock());
         crate::debug::fuzz::allocator::run();
         dump_page_list();
-        println!("{:#?}", *BUDDY.lock());
+        printlnk!("{:#?}", *BUDDY.lock());
     }
 
-    println!("hello, init!");
+    printlnk!("hello, init!");
 }

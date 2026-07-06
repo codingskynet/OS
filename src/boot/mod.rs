@@ -4,10 +4,13 @@ use crate::arch::consts::PAGE_SIZE;
 use crate::boot::bump::{Alloc, BumpAllocator};
 use crate::dev::dt::{Fdt, prop};
 use crate::init::kernel_init;
+use crate::kernel::clock::ClockMeta;
+use crate::kernel::console;
+use crate::kernel::sync::freezable::FreezableToken;
 use crate::mm::addr::Pa;
 use crate::mm::page_meta::{PageMeta, PageMetaSection};
 use crate::mm::{BUDDY, PAGE_META_MAP};
-use crate::{console, println};
+use crate::printlnk;
 
 #[allow(unused)]
 pub struct BootInfo {
@@ -31,34 +34,37 @@ pub enum BootData {
 /// It must be called with a valid stack pointer and BSS already zeroed.
 pub unsafe fn kernel_boot(boot_info: BootInfo) {
     unsafe {
+        let mut token = FreezableToken::new();
         match &boot_info.boot_data {
             BootData::DeviceTree(fdt) => {
+                ClockMeta::init(&mut token, fdt).expect("failed to initialize clock");
                 let model = fdt
                     .query()
                     .prop("model")
                     .and_then(prop::Value::into_str)
                     .unwrap_or("(unknown)");
-                println!("dtb: FDT detected, model = \"{}\"", model);
+                printlnk!("dtb: FDT detected, model = \"{}\"", model);
                 if let Err(e) = console::install_from_fdt(fdt) {
-                    println!("dtb: Failed to install console: {:?}", e);
+                    printlnk!("dtb: failed to install console: {:?}", e);
                 }
 
                 let mut allocator =
-                    BumpAllocator::new(fdt).expect("Failed to init PhysicalAllocator");
+                    BumpAllocator::new(fdt).expect("failed to initialize BumpAllocator");
                 crate::arch::init_page_table(fdt, || {
                     allocator
                         .alloc_uninit()
-                        .expect("Failed to allocate PageTable")
+                        .expect("failed to allocate PageTable")
                 });
-                init_page_metadata(allocator);
+                init_page_metadata(&mut token, allocator);
             }
         }
 
+        token.forget();
         kernel_init();
     }
 }
 
-fn init_page_metadata(mut allocator: BumpAllocator) {
+fn init_page_metadata(token: &mut FreezableToken, mut allocator: BumpAllocator) {
     for memory in allocator.memories_mut() {
         let memory_region = memory.region();
         let offset = memory_region.start.align_down(PAGE_SIZE).as_raw() / PAGE_SIZE.get();
@@ -68,7 +74,7 @@ fn init_page_metadata(mut allocator: BumpAllocator) {
             .alloc_slice(len, |i| {
                 PageMeta::uninit(Pa::new((offset + i) * PAGE_SIZE.get()))
             })
-            .expect("Failed to allocate page metadata");
+            .expect("failed to allocate page metadata");
 
         // reserve outside RAM region
         for page_meta in &mut *page_meta_items {
@@ -93,8 +99,8 @@ fn init_page_metadata(mut allocator: BumpAllocator) {
 
         BUDDY.lock().initialize_section(&mut *page_meta_items);
 
-        // SAFETY: page metadata is initialized during single-threaded boot,
-        // before allocator hot paths can read PAGE_META_MAP concurrently.
-        unsafe { PAGE_META_MAP.add(PageMetaSection::new(page_meta_items, offset, memory_region)) };
+        token.write(&PAGE_META_MAP, |map| {
+            map.add(PageMetaSection::new(page_meta_items, offset, memory_region))
+        });
     }
 }

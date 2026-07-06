@@ -10,7 +10,7 @@ use crate::dev::dt::Fdt;
 use crate::dev::dt::memory::MemoryIter;
 use crate::mm::addr::Pa;
 use crate::mm::region::Region;
-use crate::{debug, println};
+use crate::{debug, printlnk};
 
 pub trait Alloc {
     fn alloc_raw(&mut self, size: NonZeroUsize, align: NonZeroUsize) -> Result<Pa, Error>;
@@ -122,7 +122,7 @@ impl BumpAllocator {
                     }
                 }
                 if !reserved {
-                    println!("bump: failed to reserve region: {r:?}");
+                    printlnk!("bump: failed to reserve region: {r:?}");
                 }
             }
 

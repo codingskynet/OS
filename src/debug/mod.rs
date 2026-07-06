@@ -5,7 +5,7 @@ use crate::mm::PAGE_META_MAP;
 use crate::mm::addr::Pa;
 use crate::mm::buddy::BuddyAllocator;
 use crate::mm::page_meta::{Buddy, OwnedPageMeta, PageMeta, PageMetaSection, PageMetaState};
-use crate::println;
+use crate::printlnk;
 
 #[cfg(feature = "fuzz-allocator")]
 pub mod fuzz;
@@ -14,14 +14,14 @@ pub fn dump_page_list() {
     let sections = PAGE_META_MAP.sections();
 
     if sections.is_empty() {
-        println!("page metadata: empty");
+        printlnk!("page metadata: empty");
         return;
     }
 
     let pages = sections
         .iter()
         .fold(0, |pages, section| pages + section.page_meta_items().len());
-    println!(
+    printlnk!(
         "page metadata: {} sections, {} pages",
         sections.len(),
         pages
@@ -35,7 +35,7 @@ pub fn dump_page_list() {
 fn dump_page_section(index: usize, page_meta: &PageMetaSection) {
     let pages = page_meta.page_meta_items();
     if pages.is_empty() {
-        println!(
+        printlnk!(
             "  section {}: region {}..{} (offset {}): empty",
             index,
             page_meta.region().start,
@@ -45,7 +45,7 @@ fn dump_page_section(index: usize, page_meta: &PageMetaSection) {
         return;
     }
 
-    println!(
+    printlnk!(
         "  section {}: region {}..{} (offset {}, {} pages)",
         index,
         page_meta.region().start,
@@ -75,7 +75,7 @@ fn dump_page_section(index: usize, page_meta: &PageMetaSection) {
 }
 
 fn dump_page_range(start: Pa, end: Pa, status: PageMetaStatus) {
-    println!(
+    printlnk!(
         "  addr {}..{}: {} ({} pages)",
         start,
         end,

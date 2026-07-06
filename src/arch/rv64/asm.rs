@@ -37,3 +37,19 @@ pub mod interrupt {
         }
     }
 }
+
+pub mod time {
+    use super::*;
+
+    pub fn ticks() -> u64 {
+        let ticks: u64;
+        unsafe {
+            asm!(
+                "csrr {ticks}, time",
+                ticks = out(reg) ticks,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        ticks
+    }
+}

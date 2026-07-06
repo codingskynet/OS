@@ -6,7 +6,7 @@ use crate::arch::consts::PAGE_SIZE;
 use crate::mm::addr::{Pa, Va};
 use crate::mm::page_meta::PageMetaState;
 use crate::mm::{GLOBAL, page_meta_at};
-use crate::println;
+use crate::printlnk;
 
 const ITERATIONS: usize = 65536;
 const SLOTS: usize = 64;
@@ -35,7 +35,7 @@ const REDZONE: usize = 16;
 const REDZONE_BYTE: u8 = 0x39;
 
 pub fn run() {
-    println!("allocator fuzz: start");
+    printlnk!("allocator fuzz: start");
 
     let mut rng = Rng::new(0x0f5a_b10c_a110_ca7e);
     let mut slots = [Slot::empty(); SLOTS];
@@ -81,9 +81,11 @@ pub fn run() {
         }
     }
 
-    println!(
+    printlnk!(
         "allocator fuzz: ok allocations={} frees={} checks={}",
-        allocations, frees, checks
+        allocations,
+        frees,
+        checks
     );
 }
 

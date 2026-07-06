@@ -18,26 +18,22 @@ use crate::mm::addr::Pa;
 use crate::mm::region::Region;
 
 pub struct PageMetaMap {
-    sections: UnsafeCell<ArrayVec<PageMetaSection, 4>>,
+    sections: ArrayVec<PageMetaSection, 4>,
 }
-
-// SAFETY: sections are appended only during single-threaded boot, before the
-// map is used by allocator hot paths. After boot the section list is read-only.
-unsafe impl Sync for PageMetaMap {}
 
 impl PageMetaMap {
     pub const fn empty() -> Self {
         Self {
-            sections: UnsafeCell::new(ArrayVec::new_const()),
+            sections: ArrayVec::new_const(),
         }
     }
 
-    pub unsafe fn add(&self, section: PageMetaSection) {
-        unsafe { (*self.sections.get()).push(section) }
+    pub fn add(&mut self, section: PageMetaSection) {
+        self.sections.push(section);
     }
 
     pub fn sections(&self) -> &[PageMetaSection] {
-        unsafe { &*self.sections.get() }
+        &self.sections
     }
 
     pub fn page_meta(&self, addr: Pa) -> &PageMeta {
