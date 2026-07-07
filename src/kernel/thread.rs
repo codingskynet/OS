@@ -69,7 +69,7 @@ impl Thread {
 
     pub fn with_current(f: impl FnOnce(&mut Thread)) {
         let sp = arch::asm::reg::sp();
-        f(unsafe { &mut *Va::new(sp & !(STACK_SIZE.get() - 1)).as_mut_ptr() })
+        f(unsafe { &mut *Va::new(sp & !(mem::align_of::<Thread>() - 1)).as_mut_ptr() })
     }
 
     pub fn run(mut thread: ManuallyDrop<Box<Self>>) {
@@ -77,6 +77,13 @@ impl Thread {
             if !ptr::eq(current, &**thread) {
                 thread.state = ThreadState::Running;
 
+                // SAFETY: `current` is the currently running thread recovered
+                // from the active stack, and `thread` was just removed from the
+                // scheduler queue, so both `regs` fields are live and stable
+                // across the context switch. `thread` is intentionally
+                // `ManuallyDrop`: ownership of the selected thread allocation
+                // stays parked in this suspended stack frame until this call
+                // returns on a later switch back to `current`.
                 unsafe {
                     _switch(&mut current.regs, &thread.regs, current);
                 }
@@ -85,18 +92,21 @@ impl Thread {
     }
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn _kernel_thread_start(thread: &mut Thread) -> ! {
     thread.entry.take().unwrap()();
     exit_current()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn after_switch(prev: *mut Thread) {
+pub extern "C" fn _after_switch(prev: *mut Thread) {
+    // SAFETY: `_switch` passes the previously running thread as `prev` and calls
+    // this exactly once after the next thread's stack/registers have been
+    // restored. At this point `prev` is no longer executing and is not in the
+    // ready queue. Rebuilding a `Box` is used only to either requeue that
+    // allocation or destroy it when the thread has exited.
     unsafe {
         let prev = &mut *prev;
         match prev.state {
-            ThreadState::Ready => unreachable!(),
+            ThreadState::Ready => unreachable!("previous thread was ready during after_switch"),
             ThreadState::Exited => drop(Box::from_raw(prev)),
             ThreadState::Running => {
                 prev.state = ThreadState::Ready;

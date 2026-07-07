@@ -32,12 +32,14 @@ macro_rules! restore_regs {
 ///
 /// # Safety
 ///
-/// Both pointers must reference live `GeneralRegs` storage. The pointed-to
-/// thread objects must remain allocated across the switch and until the saved
-/// context is resumed.
+/// `current` must point to the register save area of the running thread, `next`
+/// must point to the register save area of a different live thread, and `prev`
+/// must be the `Thread` that owns `current`. Both thread allocations must remain
+/// valid until their saved contexts are resumed or `after_switch` observes that
+/// one has exited. This routine restores `next`, runs `after_switch(prev)` on
+/// the new stack, then returns into `next`'s saved `ra`.
 #[rustfmt::skip]
 #[unsafe(naked)]
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn _switch(
     _current: *mut GeneralRegs,
     _next: *const GeneralRegs,
@@ -68,7 +70,7 @@ pub unsafe extern "C" fn _switch(
         "ld ra, 8(sp)",
         "addi sp, sp, 16",
         "ret",
-        after_switch = sym crate::kernel::thread::after_switch,
+        after_switch = sym crate::kernel::thread::_after_switch,
         ra = const offset_of!(GeneralRegs, ra),
         sp = const offset_of!(GeneralRegs, sp),
         a0 = const offset_of!(GeneralRegs, a0),
@@ -87,9 +89,15 @@ pub unsafe extern "C" fn _switch(
     )
 }
 
+/// Switch directly into the first kernel thread context.
+///
+/// # Safety
+///
+/// `next` must point to a live `GeneralRegs` initialized for a kernel thread.
+/// Its saved stack pointer and return address must be valid because this
+/// routine never returns to the caller's stack.
 #[rustfmt::skip]
 #[unsafe(naked)]
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn _switch_to(_next: *const GeneralRegs) -> ! {
     naked_asm!(
         restore_regs!("a0"),

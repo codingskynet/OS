@@ -52,7 +52,6 @@ pub fn init() {
 
 #[rustfmt::skip]
 #[unsafe(naked)]
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn _trap_entry() -> ! {
     // This is the first code executed after the CPU vectors to `stvec`.
     // Keep this function naked so Rust does not emit a prologue before the
@@ -124,7 +123,7 @@ pub unsafe extern "C" fn _trap_entry() -> ! {
                 sstatus = const offset_of!(TrapFrame, sstatus),
                 scause = const offset_of!(TrapFrame, scause),
                 stval = const offset_of!(TrapFrame, stval),
-                handler = sym trap_handler,
+                handler = sym _trap_handler,
             )
         };
     }
@@ -155,8 +154,7 @@ impl TrapFrame {
     }
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn trap_handler(frame: &mut TrapFrame) {
+extern "C" fn _trap_handler(frame: &mut TrapFrame) {
     match frame.cause() {
         TrapCause::Exception(
             exception @ (Exception::InstructionPageFault(_)

@@ -16,7 +16,7 @@ pub fn exit_current() -> ! {
         current.state = ThreadState::Exited;
     });
     SCHEDULER.run_next();
-    unreachable!()
+    unreachable!("exited thread resumed after scheduler switch")
 }
 
 pub struct Scheduler {
