@@ -8,7 +8,6 @@ use crate::mm::buddy::BuddyAllocator;
 use crate::mm::page_meta::{Buddy, OwnedPageMeta, PageMeta, PageMetaSection, PageMetaState};
 use crate::printlnk;
 
-#[cfg(feature = "smoke")]
 pub mod smoke;
 
 pub fn smoke() {

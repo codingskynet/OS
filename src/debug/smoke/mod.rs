@@ -1,8 +1,8 @@
-// #[cfg(feature = "smoke-allocator")]
+#[cfg(feature = "smoke-allocator")]
 pub mod allocator;
 
-// #[cfg(feature = "smoke-page-fault")]
+#[cfg(feature = "smoke-page-fault")]
 pub mod page_fault;
 
-// #[cfg(feature = "smoke-kernel-thread")]
+#[cfg(feature = "smoke-kernel-thread")]
 pub mod kernel_thread;
