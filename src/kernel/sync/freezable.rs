@@ -2,6 +2,10 @@ use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::mem;
 use core::ops::Deref;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+static TOKEN_OWNED: AtomicBool = AtomicBool::new(false);
+static SHARED: AtomicBool = AtomicBool::new(false);
 
 pub struct FreezableToken {
     // prevent Clone, Copy, Send, and Sync
@@ -9,18 +13,31 @@ pub struct FreezableToken {
 }
 
 impl FreezableToken {
-    pub const unsafe fn new() -> Self {
-        Self {
-            _marker: PhantomData,
+    pub fn take() -> Option<Self> {
+        if TOKEN_OWNED
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            Some(Self {
+                _marker: PhantomData,
+            })
+        } else {
+            None
         }
     }
 
     pub fn write<T, U>(&mut self, value: &Freezable<T>, write_fn: impl Fn(&mut T) -> U) -> U {
+        assert!(!value.shared.load(Ordering::Relaxed));
         let value = unsafe { &mut *value.value.get() };
         write_fn(value)
     }
 
+    pub fn mark_shared<T>(&mut self, value: &Freezable<T>) {
+        value.shared.store(true, Ordering::Release);
+    }
+
     pub fn forget(self) {
+        SHARED.store(true, Ordering::Release);
         mem::forget(self);
     }
 }
@@ -32,12 +49,13 @@ impl Drop for FreezableToken {
 }
 
 pub struct Freezable<T> {
+    shared: AtomicBool,
     value: UnsafeCell<T>,
 }
 
 /// SAFETY: after a `Freezable<T>` is shared, mutation through its `UnsafeCell`
 /// is allowed only while holding the unique `FreezableToken`; callers of
-/// `FreezableToken::new` must ensure that no such token exists during the
+/// `FreezableToken::take` must ensure that no such token exists during the
 /// frozen shared phase. Shared access exposes `&T`, so `T` must be `Sync`.
 unsafe impl<T: Sync> Sync for Freezable<T> {}
 
@@ -45,6 +63,7 @@ impl<T> Deref for Freezable<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
+        assert!(SHARED.load(Ordering::Acquire) || self.shared.load(Ordering::Acquire));
         unsafe { &*self.value.get() }
     }
 }
@@ -52,6 +71,7 @@ impl<T> Deref for Freezable<T> {
 impl<T> Freezable<T> {
     pub const fn new(value: T) -> Self {
         Self {
+            shared: AtomicBool::new(false),
             value: UnsafeCell::new(value),
         }
     }
