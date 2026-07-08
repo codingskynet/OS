@@ -2,6 +2,9 @@ use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::mem;
 use core::ops::Deref;
+use core::sync::atomic::{self, AtomicBool, Ordering};
+
+static TOKEN_ALIVE: AtomicBool = AtomicBool::new(true);
 
 pub struct FreezableToken {
     // prevent Clone, Copy, Send, and Sync
@@ -9,9 +12,16 @@ pub struct FreezableToken {
 }
 
 impl FreezableToken {
-    pub const unsafe fn new() -> Self {
-        Self {
-            _marker: PhantomData,
+    pub fn take() -> Option<Self> {
+        if TOKEN_ALIVE
+            .compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            Some(Self {
+                _marker: PhantomData,
+            })
+        } else {
+            None
         }
     }
 
@@ -21,6 +31,7 @@ impl FreezableToken {
     }
 
     pub fn forget(self) {
+        atomic::fence(Ordering::Release);
         mem::forget(self);
     }
 }
@@ -37,7 +48,7 @@ pub struct Freezable<T> {
 
 /// SAFETY: after a `Freezable<T>` is shared, mutation through its `UnsafeCell`
 /// is allowed only while holding the unique `FreezableToken`; callers of
-/// `FreezableToken::new` must ensure that no such token exists during the
+/// `FreezableToken::take` must ensure that no such token exists during the
 /// frozen shared phase. Shared access exposes `&T`, so `T` must be `Sync`.
 unsafe impl<T: Sync> Sync for Freezable<T> {}
 
@@ -45,6 +56,7 @@ impl<T> Deref for Freezable<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
+        debug_assert!(!TOKEN_ALIVE.load(Ordering::Relaxed));
         unsafe { &*self.value.get() }
     }
 }

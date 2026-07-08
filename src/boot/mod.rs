@@ -33,37 +33,35 @@ pub enum BootData {
 /// # Safety
 /// It must be called with a valid stack pointer and BSS already zeroed.
 pub unsafe fn kernel_boot(boot_info: BootInfo) -> ! {
-    unsafe {
-        let mut token = FreezableToken::new();
-        match &boot_info.boot_data {
-            BootData::DeviceTree(fdt) => {
-                ClockMeta::init(&mut token, fdt).expect("failed to initialize clock");
-                let model = fdt
-                    .query()
-                    .prop("model")
-                    .and_then(prop::Value::into_str)
-                    .unwrap_or("(unknown)");
-                printlnk!("dtb: FDT detected, model = \"{}\"", model);
-                if let Err(e) = console::install_from_fdt(fdt) {
-                    printlnk!("dtb: failed to install console: {:?}", e);
-                }
-
-                let mut allocator =
-                    BumpAllocator::new(fdt).expect("failed to initialize BumpAllocator");
-                crate::arch::init_page_table(fdt, || {
-                    allocator
-                        .alloc_uninit()
-                        .expect("failed to allocate PageTable")
-                });
-                init_page_metadata(&mut token, allocator);
+    let mut token = FreezableToken::take().expect("failed to take FreezableToken");
+    match &boot_info.boot_data {
+        BootData::DeviceTree(fdt) => {
+            ClockMeta::init(&mut token, fdt).expect("failed to initialize clock");
+            let model = fdt
+                .query()
+                .prop("model")
+                .and_then(prop::Value::into_str)
+                .unwrap_or("(unknown)");
+            printlnk!("dtb: FDT detected, model = \"{}\"", model);
+            if let Err(e) = console::install_from_fdt(fdt) {
+                printlnk!("dtb: failed to install console: {:?}", e);
             }
-        }
 
-        token.forget();
-        crate::arch::trap::init();
-        crate::arch::timer::init();
-        kernel_init();
+            let mut allocator =
+                BumpAllocator::new(fdt).expect("failed to initialize BumpAllocator");
+            crate::arch::init_page_table(fdt, || {
+                allocator
+                    .alloc_uninit()
+                    .expect("failed to allocate PageTable")
+            });
+            init_page_metadata(&mut token, allocator);
+        }
     }
+
+    token.forget();
+    crate::arch::trap::init();
+    crate::arch::timer::init();
+    kernel_init();
 }
 
 fn init_page_metadata(token: &mut FreezableToken, mut allocator: BumpAllocator) {
