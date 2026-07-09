@@ -162,6 +162,23 @@ impl PageMeta {
         }
     }
 
+    /// Recreate a linear reserved-page ownership token from page metadata.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure no other ownership token exists for this page
+    /// and that allocator locking excludes concurrent state transitions.
+    pub unsafe fn owned_reserved(&self) -> OwnedPageMeta<Reserved> {
+        if !matches!(**self, PageMetaState::Reserved) {
+            panic!("it is not reserved")
+        }
+
+        OwnedPageMeta {
+            page_meta: NonNull::from(self),
+            _marker: PhantomData,
+        }
+    }
+
     fn owned<S>(&mut self) -> OwnedPageMeta<S> {
         OwnedPageMeta {
             page_meta: NonNull::from(self),
@@ -209,6 +226,8 @@ pub enum PageMetaState {
     Slab(SlabPageMeta),
 }
 
+pub enum Reserved {}
+
 pub struct OwnedPageMeta<S> {
     page_meta: NonNull<PageMeta>,
     _marker: PhantomData<S>,
@@ -229,5 +248,20 @@ impl<S> OwnedPageMeta<S> {
 
     fn as_mut(&mut self) -> &mut PageMetaState {
         unsafe { self.page_meta.as_mut() }
+    }
+}
+
+impl OwnedPageMeta<Reserved> {
+    pub fn into_buddy(mut self) -> OwnedPageMeta<Buddy> {
+        let reserved: &mut [PageMeta] = &mut [];
+        *self.as_mut() = PageMetaState::Buddy(BuddyPageMeta {
+            reserved: NonNull::from(reserved),
+            next: None,
+        });
+
+        OwnedPageMeta {
+            page_meta: self.page_meta,
+            _marker: PhantomData,
+        }
     }
 }
