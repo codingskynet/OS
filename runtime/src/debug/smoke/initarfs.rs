@@ -1,5 +1,4 @@
-use crate::fs;
-use crate::printlnk;
+use crate::{fs, printlnk};
 
 const EXPECTED: &[u8] = include_bytes!("../../../../userland/rootfs/hello.txt");
 
