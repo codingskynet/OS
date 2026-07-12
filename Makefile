@@ -41,7 +41,7 @@ RUSTFLAGS := \
 	-C link-arg=--no-relax \
 	-C link-arg=--orphan-handling=error
 
-.PHONY: all setup initarfs build image run clean fmt clippy typos test doc-check open-doc check check-boot-sections FORCE
+.PHONY: all setup initarfs build image run clean fmt clippy typos test cargo-check doc-check open-doc check check-boot-sections FORCE
 
 all: build image
 
@@ -84,8 +84,8 @@ clean:
 fmt:
 	./fmt
 
-clippy:
-	cargo clippy --target=$(ARCH) $(FEATURE_FLAGS)
+clippy: initarfs
+	cargo clippy --target=$(ARCH) $(CARGO_FLAGS) $(FEATURE_FLAGS) -- -D warnings
 
 typos:
 	typos
@@ -96,12 +96,15 @@ check-boot-sections:
 test:
 	cargo test -p runtime-test --lib --target=$(HOST_ARCH)
 
-doc-check:
+cargo-check: initarfs
+	cargo check --target=$(ARCH) $(CARGO_FLAGS) $(FEATURE_FLAGS)
+
+doc-check: initarfs
 	cargo test --doc -p runtime $(FEATURE_FLAGS) --target=$(ARCH)
 	cargo doc --no-deps -p runtime $(FEATURE_FLAGS) --target=$(ARCH)
 	cargo doc --no-deps -p boot --bin boot $(FEATURE_FLAGS) --target=$(ARCH)
 
-open-doc:
+open-doc: initarfs
 	cargo doc --no-deps -p runtime $(FEATURE_FLAGS) --target=$(ARCH)
 	cargo doc --open -p runtime --no-deps $(FEATURE_FLAGS) --target=$(ARCH)
 
