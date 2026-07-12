@@ -10,8 +10,9 @@ test = false
 workspace = true
 
 [features]
-smoke = ["smoke-allocator", "smoke-page-fault", "smoke-kernel-thread"]
+smoke = ["smoke-allocator", "smoke-initarfs", "smoke-page-fault", "smoke-kernel-thread"]
 smoke-allocator = []
+smoke-initarfs = []
 smoke-page-fault = []
 smoke-kernel-thread = []
 
@@ -22,5 +23,7 @@ crossbeam-utils.workspace = true
 derive_more.workspace = true
 either.workspace = true
 extend.workspace = true
+hashbrown.workspace = true
+tar-no-std.workspace = true
 thiserror.workspace = true
 winnow.workspace = true

@@ -94,6 +94,8 @@ use core::ptr;
 
 use bitflags::bitflags;
 
+use crate::arch::consts::UPPER_CANONICAL_BASE;
+use crate::arch::paging::active_root;
 use crate::mm::addr::{Pa, Va};
 
 pub const SATP_MODE_SV39: usize = 8 << 60;
@@ -120,6 +122,22 @@ impl PageTable {
             ptr::write_bytes(page_table, 0, 1);
         }
         page_table
+    }
+
+    pub fn init_from_root(page_table: &mut MaybeUninit<Self>) -> &mut Self {
+        let root = active_root();
+        let upper_start = vpn2(Va::new(UPPER_CANONICAL_BASE));
+        let destination = page_table.as_mut_ptr().cast::<PageTableEntry>();
+
+        unsafe {
+            ptr::write_bytes(destination, 0, upper_start);
+            ptr::copy_nonoverlapping(
+                root.0.as_ptr().add(upper_start),
+                destination.add(upper_start),
+                root.0.len() - upper_start,
+            );
+            &mut *page_table.as_mut_ptr()
+        }
     }
 
     pub fn entry(&mut self, index: usize) -> &mut PageTableEntry {

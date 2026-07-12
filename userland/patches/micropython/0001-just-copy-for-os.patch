@@ -1,0 +1,660 @@
+From 4f27c7c75ab1a81951ed5ad649c42b5874450089 Mon Sep 17 00:00:00 2001
+From: Taewoo An <2046664@gmail.com>
+Date: Sun, 12 Jul 2026 15:30:25 +0900
+Subject: [PATCH] just copy for os
+
+---
+ ports/os/Makefile       | 111 +++++++++++++++++
+ ports/os/README.md      |  47 ++++++++
+ ports/os/main.c         | 260 ++++++++++++++++++++++++++++++++++++++++
+ ports/os/mpconfigport.h |  51 ++++++++
+ ports/os/mphalport.h    |   5 +
+ ports/os/qstrdefsport.h |   2 +
+ ports/os/stm32f405.ld   |  63 ++++++++++
+ ports/os/uart_core.c    |  49 ++++++++
+ 8 files changed, 588 insertions(+)
+ create mode 100644 ports/os/Makefile
+ create mode 100644 ports/os/README.md
+ create mode 100644 ports/os/main.c
+ create mode 100644 ports/os/mpconfigport.h
+ create mode 100644 ports/os/mphalport.h
+ create mode 100644 ports/os/qstrdefsport.h
+ create mode 100644 ports/os/stm32f405.ld
+ create mode 100644 ports/os/uart_core.c
+
+diff --git a/ports/os/Makefile b/ports/os/Makefile
+new file mode 100644
+index 0000000..9bdc06f
+--- /dev/null
++++ b/ports/os/Makefile
+@@ -0,0 +1,111 @@
++include ../../py/mkenv.mk
++
++CROSS = 0
++
++# qstr definitions (must come before including py.mk)
++QSTR_DEFS = qstrdefsport.h
++
++# MicroPython feature configurations
++MICROPY_ROM_TEXT_COMPRESSION ?= 1
++
++# include py core make definitions
++include $(TOP)/py/py.mk
++
++ifeq ($(CROSS), 1)
++CROSS_COMPILE ?= arm-none-eabi-
++endif
++
++INC += -I.
++INC += -I$(TOP)
++INC += -I$(BUILD)
++
++ifeq ($(CROSS), 1)
++DFU = $(TOP)/tools/dfu.py
++PYDFU = $(TOP)/tools/pydfu.py
++CFLAGS_CORTEX_M4 = -mthumb -mtune=cortex-m4 -mcpu=cortex-m4 -msoft-float -fsingle-precision-constant -Wdouble-promotion -Wfloat-conversion
++CFLAGS += $(INC) -Wall -Werror -std=c99 -nostdlib $(CFLAGS_CORTEX_M4) $(COPT)
++LDFLAGS += -nostdlib -T stm32f405.ld -Map=$@.map --cref --gc-sections
++else
++UNAME_S := $(shell uname -s)
++LD = $(CC)
++CFLAGS += $(INC) -Wall -Werror -Wdouble-promotion -Wfloat-conversion -std=c99 $(COPT)
++ifeq ($(UNAME_S),Linux)
++LDFLAGS += -Wl,-Map=$@.map,--cref -Wl,--gc-sections
++else ifeq ($(UNAME_S),Darwin)
++LDFLAGS += -Wl,-map,$@.map -Wl,-dead_strip
++endif
++endif
++
++CSUPEROPT = -Os # save some code space
++
++# Tune for Debugging or Optimization
++CFLAGS += -g  # always include debug info in the ELF
++ifeq ($(DEBUG), 1)
++CFLAGS += -O0
++else
++CFLAGS += -Os -DNDEBUG
++CFLAGS += -fdata-sections -ffunction-sections
++endif
++
++# Flags for optional C++ source code
++CXXFLAGS += $(filter-out -std=c99,$(CFLAGS))
++
++LIBS =
++
++SRC_C = \
++	main.c \
++	uart_core.c \
++	shared/libc/printf.c \
++	shared/readline/readline.c \
++	shared/runtime/pyexec.c \
++	shared/runtime/stdout_helpers.c \
++	$(BUILD)/_frozen_mpy.c \
++
++ifeq ($(CROSS), 1)
++SRC_C += shared/libc/string0.c
++endif
++
++SRC_QSTR += shared/readline/readline.c shared/runtime/pyexec.c
++
++OBJ += $(PY_CORE_O)
++OBJ += $(addprefix $(BUILD)/, $(SRC_C:.c=.o))
++OBJ += $(addprefix $(BUILD)/, $(SRC_CXX:.cpp=.o))
++
++ifeq ($(CROSS), 1)
++all: $(BUILD)/firmware.dfu
++else
++all: $(BUILD)/firmware.elf
++endif
++
++$(BUILD)/_frozen_mpy.c: $(TOP)/tests/frozen/frozentest.mpy $(BUILD)/genhdr/qstrdefs.generated.h
++	$(ECHO) "MISC freezing bytecode"
++	$(Q)$(TOP)/tools/mpy-tool.py -f -q $(BUILD)/genhdr/qstrdefs.preprocessed.h -mlongint-impl=none $< > $@
++
++$(BUILD)/firmware.elf: $(OBJ)
++	$(ECHO) "LINK $@"
++	$(Q)$(LD) $(LDFLAGS) -o $@ $^ $(LIBS)
++	$(Q)$(SIZE) $@
++
++$(BUILD)/firmware.bin: $(BUILD)/firmware.elf
++	$(Q)$(OBJCOPY) -O binary -j .isr_vector -j .text -j .data $^ $(BUILD)/firmware.bin
++
++$(BUILD)/firmware.dfu: $(BUILD)/firmware.bin
++	$(ECHO) "Create $@"
++	$(Q)$(PYTHON) $(DFU) -b 0x08000000:$(BUILD)/firmware.bin $@
++
++deploy: $(BUILD)/firmware.dfu
++	$(ECHO) "Writing $< to the board"
++	$(Q)$(PYTHON) $(PYDFU) -u $<
++
++# Run emulation build on a POSIX system with suitable terminal settings
++run:
++	@saved_=`stty -g`; \
++	  stty raw opost -echo; \
++	  $(BUILD)/firmware.elf; \
++	  echo "Exit status: $$?"; \
++	  stty $$saved_
++
++test: $(BUILD)/firmware.elf
++	$(Q)/usr/bin/printf "print('hello world!', list(x+1 for x in range(10)), end='eol\\\\n')\\r\\n\\004" | $(BUILD)/firmware.elf | tail -n2 | grep "^hello world! \\[1, 2, 3, 4, 5, 6, 7, 8, 9, 10\\]eol"
++
++include $(TOP)/py/mkrules.mk
+diff --git a/ports/os/README.md b/ports/os/README.md
+new file mode 100644
+index 0000000..356fc4b
+--- /dev/null
++++ b/ports/os/README.md
+@@ -0,0 +1,47 @@
++# The minimal port
++
++This port is intended to be a minimal MicroPython port that actually runs.
++It can run under Linux (or similar) and on any STM32F4xx MCU (eg the pyboard).
++
++## Building and running Linux version
++
++By default the port will be built for the host machine:
++
++    $ make
++
++To run the executable and get a basic working REPL do:
++
++    $ make run
++
++## Building for an STM32 MCU
++
++The Makefile has the ability to build for a Cortex-M CPU, and by default
++includes some start-up code for an STM32F4xx MCU and also enables a UART
++for communication.  To build:
++
++    $ make CROSS=1
++
++If you previously built the Linux version, you will need to first run
++`make clean` to get rid of incompatible object files.
++
++Building will produce the build/firmware.dfu file which can be programmed
++to an MCU using:
++
++    $ make CROSS=1 deploy
++
++This version of the build will work out-of-the-box on a pyboard (and
++anything similar), and will give you a MicroPython REPL on UART1 at 9600
++baud.  Pin PA13 will also be driven high, and this turns on the red LED on
++the pyboard.
++
++## Building without the built-in MicroPython compiler
++
++This minimal port can be built with the built-in MicroPython compiler
++disabled.  This will reduce the firmware by about 20k on a Thumb2 machine,
++and by about 40k on 32-bit x86.  Without the compiler the REPL will be
++disabled, but pre-compiled scripts can still be executed.
++
++To test out this feature, change the `MICROPY_ENABLE_COMPILER` config
++option to "0" in the mpconfigport.h file in this directory.  Then
++recompile and run the firmware and it will execute the frozentest.py
++file.
+diff --git a/ports/os/main.c b/ports/os/main.c
+new file mode 100644
+index 0000000..b9e9034
+--- /dev/null
++++ b/ports/os/main.c
+@@ -0,0 +1,260 @@
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "py/builtin.h"
++#include "py/compile.h"
++#include "py/runtime.h"
++#include "py/repl.h"
++#include "py/gc.h"
++#include "py/mperrno.h"
++#include "shared/runtime/pyexec.h"
++
++#if MICROPY_ENABLE_COMPILER
++void do_str(const char *src, mp_parse_input_kind_t input_kind) {
++    nlr_buf_t nlr;
++    if (nlr_push(&nlr) == 0) {
++        mp_lexer_t *lex = mp_lexer_new_from_str_len(MP_QSTR__lt_stdin_gt_, src, strlen(src), 0);
++        qstr source_name = lex->source_name;
++        mp_parse_tree_t parse_tree = mp_parse(lex, input_kind);
++        mp_obj_t module_fun = mp_compile(&parse_tree, source_name, true);
++        mp_call_function_0(module_fun);
++        nlr_pop();
++    } else {
++        // uncaught exception
++        mp_obj_print_exception(&mp_plat_print, (mp_obj_t)nlr.ret_val);
++    }
++}
++#endif
++
++static char *stack_top;
++#if MICROPY_ENABLE_GC
++static char heap[MICROPY_HEAP_SIZE];
++#endif
++
++int main(int argc, char **argv) {
++    int stack_dummy;
++    stack_top = (char *)&stack_dummy;
++
++    #if MICROPY_ENABLE_GC
++    gc_init(heap, heap + sizeof(heap));
++    #endif
++    mp_init();
++    #if MICROPY_ENABLE_COMPILER
++    #if MICROPY_REPL_EVENT_DRIVEN
++    pyexec_event_repl_init();
++    for (;;) {
++        int c = mp_hal_stdin_rx_chr();
++        if (pyexec_event_repl_process_char(c)) {
++            break;
++        }
++    }
++    #else
++    pyexec_friendly_repl();
++    #endif
++    // do_str("print('hello world!', list(x+1 for x in range(10)), end='eol\\n')", MP_PARSE_SINGLE_INPUT);
++    // do_str("for i in range(10):\r\n  print(i)", MP_PARSE_FILE_INPUT);
++    #else
++    pyexec_frozen_module("frozentest.py", false);
++    #endif
++    mp_deinit();
++    return 0;
++}
++
++#if MICROPY_ENABLE_GC
++void gc_collect(void) {
++    // WARNING: This gc_collect implementation doesn't try to get root
++    // pointers from CPU registers, and thus may function incorrectly.
++    void *dummy;
++    gc_collect_start();
++    gc_collect_root(&dummy, ((mp_uint_t)stack_top - (mp_uint_t)&dummy) / sizeof(mp_uint_t));
++    gc_collect_end();
++    gc_dump_info(&mp_plat_print);
++}
++#endif
++
++mp_lexer_t *mp_lexer_new_from_file(qstr filename) {
++    mp_raise_OSError(MP_ENOENT);
++}
++
++mp_import_stat_t mp_import_stat(const char *path) {
++    return MP_IMPORT_STAT_NO_EXIST;
++}
++
++void nlr_jump_fail(void *val) {
++    while (1) {
++        ;
++    }
++}
++
++void MP_NORETURN __fatal_error(const char *msg) {
++    while (1) {
++        ;
++    }
++}
++
++#ifndef NDEBUG
++void MP_WEAK __assert_func(const char *file, int line, const char *func, const char *expr) {
++    printf("Assertion '%s' failed, at file %s:%d\n", expr, file, line);
++    __fatal_error("Assertion failed");
++}
++#endif
++
++#if MICROPY_MIN_USE_CORTEX_CPU
++
++// this is a minimal IRQ and reset framework for any Cortex-M CPU
++
++extern uint32_t _estack, _sidata, _sdata, _edata, _sbss, _ebss;
++
++void Reset_Handler(void) __attribute__((naked));
++void Reset_Handler(void) {
++    // set stack pointer
++    __asm volatile ("ldr sp, =_estack");
++    // copy .data section from flash to RAM
++    for (uint32_t *src = &_sidata, *dest = &_sdata; dest < &_edata;) {
++        *dest++ = *src++;
++    }
++    // zero out .bss section
++    for (uint32_t *dest = &_sbss; dest < &_ebss;) {
++        *dest++ = 0;
++    }
++    // jump to board initialisation
++    void _start(void);
++    _start();
++}
++
++void Default_Handler(void) {
++    for (;;) {
++    }
++}
++
++const uint32_t isr_vector[] __attribute__((section(".isr_vector"))) = {
++    (uint32_t)&_estack,
++    (uint32_t)&Reset_Handler,
++    (uint32_t)&Default_Handler, // NMI_Handler
++    (uint32_t)&Default_Handler, // HardFault_Handler
++    (uint32_t)&Default_Handler, // MemManage_Handler
++    (uint32_t)&Default_Handler, // BusFault_Handler
++    (uint32_t)&Default_Handler, // UsageFault_Handler
++    0,
++    0,
++    0,
++    0,
++    (uint32_t)&Default_Handler, // SVC_Handler
++    (uint32_t)&Default_Handler, // DebugMon_Handler
++    0,
++    (uint32_t)&Default_Handler, // PendSV_Handler
++    (uint32_t)&Default_Handler, // SysTick_Handler
++};
++
++void _start(void) {
++    // when we get here: stack is initialised, bss is clear, data is copied
++
++    // SCB->CCR: enable 8-byte stack alignment for IRQ handlers, in accord with EABI
++    *((volatile uint32_t *)0xe000ed14) |= 1 << 9;
++
++    // initialise the cpu and peripherals
++    #if MICROPY_MIN_USE_STM32_MCU
++    void stm32_init(void);
++    stm32_init();
++    #endif
++
++    // now that we have a basic system up and running we can call main
++    main(0, NULL);
++
++    // we must not return
++    for (;;) {
++    }
++}
++
++#endif
++
++#if MICROPY_MIN_USE_STM32_MCU
++
++// this is minimal set-up code for an STM32 MCU
++
++typedef struct {
++    volatile uint32_t CR;
++    volatile uint32_t PLLCFGR;
++    volatile uint32_t CFGR;
++    volatile uint32_t CIR;
++    uint32_t _1[8];
++    volatile uint32_t AHB1ENR;
++    volatile uint32_t AHB2ENR;
++    volatile uint32_t AHB3ENR;
++    uint32_t _2;
++    volatile uint32_t APB1ENR;
++    volatile uint32_t APB2ENR;
++} periph_rcc_t;
++
++typedef struct {
++    volatile uint32_t MODER;
++    volatile uint32_t OTYPER;
++    volatile uint32_t OSPEEDR;
++    volatile uint32_t PUPDR;
++    volatile uint32_t IDR;
++    volatile uint32_t ODR;
++    volatile uint16_t BSRRL;
++    volatile uint16_t BSRRH;
++    volatile uint32_t LCKR;
++    volatile uint32_t AFR[2];
++} periph_gpio_t;
++
++typedef struct {
++    volatile uint32_t SR;
++    volatile uint32_t DR;
++    volatile uint32_t BRR;
++    volatile uint32_t CR1;
++} periph_uart_t;
++
++#define USART1 ((periph_uart_t *)0x40011000)
++#define GPIOA  ((periph_gpio_t *)0x40020000)
++#define GPIOB  ((periph_gpio_t *)0x40020400)
++#define RCC    ((periph_rcc_t *)0x40023800)
++
++// simple GPIO interface
++#define GPIO_MODE_IN (0)
++#define GPIO_MODE_OUT (1)
++#define GPIO_MODE_ALT (2)
++#define GPIO_PULL_NONE (0)
++#define GPIO_PULL_UP (0)
++#define GPIO_PULL_DOWN (1)
++void gpio_init(periph_gpio_t *gpio, int pin, int mode, int pull, int alt) {
++    gpio->MODER = (gpio->MODER & ~(3 << (2 * pin))) | (mode << (2 * pin));
++    // OTYPER is left as default push-pull
++    // OSPEEDR is left as default low speed
++    gpio->PUPDR = (gpio->PUPDR & ~(3 << (2 * pin))) | (pull << (2 * pin));
++    gpio->AFR[pin >> 3] = (gpio->AFR[pin >> 3] & ~(15 << (4 * (pin & 7)))) | (alt << (4 * (pin & 7)));
++}
++#define gpio_get(gpio, pin) ((gpio->IDR >> (pin)) & 1)
++#define gpio_set(gpio, pin, value) do { gpio->ODR = (gpio->ODR & ~(1 << (pin))) | (value << pin); } while (0)
++#define gpio_low(gpio, pin) do { gpio->BSRRH = (1 << (pin)); } while (0)
++#define gpio_high(gpio, pin) do { gpio->BSRRL = (1 << (pin)); } while (0)
++
++void stm32_init(void) {
++    // basic MCU config
++    RCC->CR |= (uint32_t)0x00000001; // set HSION
++    RCC->CFGR = 0x00000000; // reset all
++    RCC->CR &= (uint32_t)0xfef6ffff; // reset HSEON, CSSON, PLLON
++    RCC->PLLCFGR = 0x24003010; // reset PLLCFGR
++    RCC->CR &= (uint32_t)0xfffbffff; // reset HSEBYP
++    RCC->CIR = 0x00000000; // disable IRQs
++
++    // leave the clock as-is (internal 16MHz)
++
++    // enable GPIO clocks
++    RCC->AHB1ENR |= 0x00000003; // GPIOAEN, GPIOBEN
++
++    // turn on an LED! (on pyboard it's the red one)
++    gpio_init(GPIOA, 13, GPIO_MODE_OUT, GPIO_PULL_NONE, 0);
++    gpio_high(GPIOA, 13);
++
++    // enable UART1 at 9600 baud (TX=B6, RX=B7)
++    gpio_init(GPIOB, 6, GPIO_MODE_ALT, GPIO_PULL_NONE, 7);
++    gpio_init(GPIOB, 7, GPIO_MODE_ALT, GPIO_PULL_NONE, 7);
++    RCC->APB2ENR |= 0x00000010; // USART1EN
++    USART1->BRR = (104 << 4) | 3; // 16MHz/(16*104.1875) = 9598 baud
++    USART1->CR1 = 0x0000200c; // USART enable, tx enable, rx enable
++}
++
++#endif
+diff --git a/ports/os/mpconfigport.h b/ports/os/mpconfigport.h
+new file mode 100644
+index 0000000..a4430e0
+--- /dev/null
++++ b/ports/os/mpconfigport.h
+@@ -0,0 +1,51 @@
++#include <stdint.h>
++
++// options to control how MicroPython is built
++
++// Use the minimal starting configuration (disables all optional features).
++#define MICROPY_CONFIG_ROM_LEVEL (MICROPY_CONFIG_ROM_LEVEL_MINIMUM)
++
++// You can disable the built-in MicroPython compiler by setting the following
++// config option to 0.  If you do this then you won't get a REPL prompt, but you
++// will still be able to execute pre-compiled scripts, compiled with mpy-cross.
++#define MICROPY_ENABLE_COMPILER     (1)
++
++#define MICROPY_QSTR_EXTRA_POOL           mp_qstr_frozen_const_pool
++#define MICROPY_ENABLE_GC                 (0)
++#define MICROPY_HELPER_REPL               (1)
++#define MICROPY_MODULE_FROZEN_MPY         (1)
++#define MICROPY_ENABLE_EXTERNAL_IMPORT    (1)
++
++#define MICROPY_ALLOC_PATH_MAX            (256)
++
++// Use the minimum headroom in the chunk allocator for parse nodes.
++#define MICROPY_ALLOC_PARSE_CHUNK_INIT    (16)
++
++// Disable all optional sys module features.
++#define MICROPY_PY_SYS_MODULES            (0)
++#define MICROPY_PY_SYS_EXIT               (0)
++#define MICROPY_PY_SYS_PATH               (0)
++#define MICROPY_PY_SYS_ARGV               (0)
++
++// type definitions for the specific machine
++
++typedef long mp_off_t;
++
++// We need to provide a declaration/definition of alloca()
++#include <alloca.h>
++
++#define MICROPY_HW_BOARD_NAME "minimal"
++#define MICROPY_HW_MCU_NAME "unknown-cpu"
++
++#if defined(__linux__) || defined(__APPLE__)
++#define MICROPY_MIN_USE_STDOUT (1)
++#define MICROPY_HEAP_SIZE      (25600) // heap size 25 kilobytes
++#endif
++
++#ifdef __thumb__
++#define MICROPY_MIN_USE_CORTEX_CPU (1)
++#define MICROPY_MIN_USE_STM32_MCU (1)
++#define MICROPY_HEAP_SIZE      (2048) // heap size 2 kilobytes
++#endif
++
++#define MP_STATE_PORT MP_STATE_VM
+diff --git a/ports/os/mphalport.h b/ports/os/mphalport.h
+new file mode 100644
+index 0000000..5130d19
+--- /dev/null
++++ b/ports/os/mphalport.h
+@@ -0,0 +1,5 @@
++static inline mp_uint_t mp_hal_ticks_ms(void) {
++    return 0;
++}
++static inline void mp_hal_set_interrupt_char(char c) {
++}
+diff --git a/ports/os/qstrdefsport.h b/ports/os/qstrdefsport.h
+new file mode 100644
+index 0000000..00d3e2a
+--- /dev/null
++++ b/ports/os/qstrdefsport.h
+@@ -0,0 +1,2 @@
++// qstrs specific to this port
++// *FORMAT-OFF*
+diff --git a/ports/os/stm32f405.ld b/ports/os/stm32f405.ld
+new file mode 100644
+index 0000000..6a27544
+--- /dev/null
++++ b/ports/os/stm32f405.ld
+@@ -0,0 +1,63 @@
++/*
++    GNU linker script for STM32F405
++*/
++
++/* Specify the memory areas */
++MEMORY
++{
++    FLASH (rx)      : ORIGIN = 0x08000000, LENGTH = 0x100000 /* entire flash, 1 MiB */
++    CCMRAM (xrw)    : ORIGIN = 0x10000000, LENGTH = 0x010000 /* 64 KiB */
++    RAM (xrw)       : ORIGIN = 0x20000000, LENGTH = 0x020000 /* 128 KiB */
++}
++
++/* top end of the stack */
++_estack = ORIGIN(RAM) + LENGTH(RAM);
++
++/* define output sections */
++SECTIONS
++{
++    /* The program code and other data goes into FLASH */
++    .text :
++    {
++        . = ALIGN(4);
++        KEEP(*(.isr_vector)) /* isr vector table */
++        *(.text)           /* .text sections (code) */
++        *(.text*)          /* .text* sections (code) */
++        *(.rodata)         /* .rodata sections (constants, strings, etc.) */
++        *(.rodata*)        /* .rodata* sections (constants, strings, etc.) */
++
++        . = ALIGN(4);
++        _etext = .;        /* define a global symbol at end of code */
++        _sidata = _etext;  /* This is used by the startup in order to initialize the .data section */
++    } >FLASH
++
++    /* This is the initialized data section
++    The program executes knowing that the data is in the RAM
++    but the loader puts the initial values in the FLASH (inidata).
++    It is one task of the startup to copy the initial values from FLASH to RAM. */
++    .data : AT ( _sidata )
++    {
++        . = ALIGN(4);
++        _sdata = .;        /* create a global symbol at data start; used by startup code in order to initialise the .data section in RAM */
++        *(.data)           /* .data sections */
++        *(.data*)          /* .data* sections */
++
++        . = ALIGN(4);
++        _edata = .;        /* define a global symbol at data end; used by startup code in order to initialise the .data section in RAM */
++    } >RAM
++
++    /* Uninitialized data section */
++    .bss :
++    {
++        . = ALIGN(4);
++        _sbss = .;         /* define a global symbol at bss start; used by startup code */
++        *(.bss)
++        *(.bss*)
++        *(COMMON)
++
++        . = ALIGN(4);
++        _ebss = .;         /* define a global symbol at bss end; used by startup code */
++    } >RAM
++
++    .ARM.attributes 0 : { *(.ARM.attributes) }
++}
+diff --git a/ports/os/uart_core.c b/ports/os/uart_core.c
+new file mode 100644
+index 0000000..a3dfe69
+--- /dev/null
++++ b/ports/os/uart_core.c
+@@ -0,0 +1,49 @@
++#include <unistd.h>
++#include "py/mpconfig.h"
++
++/*
++ * Core UART functions to implement for a port
++ */
++
++#if MICROPY_MIN_USE_STM32_MCU
++typedef struct {
++    volatile uint32_t SR;
++    volatile uint32_t DR;
++} periph_uart_t;
++#define USART1 ((periph_uart_t *)0x40011000)
++#endif
++
++// Receive single character
++int mp_hal_stdin_rx_chr(void) {
++    unsigned char c = 0;
++    #if MICROPY_MIN_USE_STDOUT
++    int r = read(STDIN_FILENO, &c, 1);
++    (void)r;
++    #elif MICROPY_MIN_USE_STM32_MCU
++    // wait for RXNE
++    while ((USART1->SR & (1 << 5)) == 0) {
++    }
++    c = USART1->DR;
++    #endif
++    return c;
++}
++
++// Send string of given length
++mp_uint_t mp_hal_stdout_tx_strn(const char *str, mp_uint_t len) {
++    mp_uint_t ret = len;
++    #if MICROPY_MIN_USE_STDOUT
++    int r = write(STDOUT_FILENO, str, len);
++    if (r >= 0) {
++        // in case of an error in the syscall, report no bytes written
++        ret = 0;
++    }
++    #elif MICROPY_MIN_USE_STM32_MCU
++    while (len--) {
++        // wait for TXE
++        while ((USART1->SR & (1 << 7)) == 0) {
++        }
++        USART1->DR = *str++;
++    }
++    #endif
++    return ret;
++}

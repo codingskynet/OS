@@ -15,7 +15,5 @@
 
 [files]
 extend-exclude = [
-  "Cargo.lock",
-  "kernel.img",
-  "*.dtb",
+  "Cargo.lock"
 ]

@@ -36,10 +36,10 @@ jobs:
         run: make check-boot-sections
 
       - name: Lint (clippy)
-        run: cargo clippy --target=${{ env.ARCH }} --release -- -D warnings
+        run: make clippy
 
       - name: Test (host)
         run: make test
 
       - name: Check (full build verification)
-        run: cargo check --target=${{ env.ARCH }} --release
+        run: make cargo-check

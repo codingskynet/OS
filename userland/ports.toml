@@ -1,0 +1,8 @@
+version = 1
+
+[[port]]
+name = "micropython"
+url = "https://github.com/micropython/micropython.git"
+rev = "78ff170de9e32c79db6e64d3e33d2bd60002bdcd"
+dest = "ports/micropython"
+patches = "patches/micropython"

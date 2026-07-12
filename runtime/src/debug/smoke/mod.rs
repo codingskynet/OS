@@ -3,6 +3,9 @@
 #[cfg(feature = "smoke-allocator")]
 pub mod allocator;
 
+#[cfg(feature = "smoke-initarfs")]
+pub mod initarfs;
+
 #[cfg(feature = "smoke-page-fault")]
 pub mod page_fault;
 
