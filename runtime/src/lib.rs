@@ -13,6 +13,7 @@ pub mod util;
 
 pub mod arch;
 pub mod debug;
+pub mod fs;
 pub mod kernel;
 pub mod mm;
 mod panic;

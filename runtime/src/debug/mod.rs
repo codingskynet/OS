@@ -17,6 +17,8 @@ pub mod smoke;
 pub fn smoke() {
     #[cfg(feature = "smoke-allocator")]
     smoke::allocator::smoke();
+    #[cfg(feature = "smoke-initarfs")]
+    smoke::initarfs::smoke();
     #[cfg(feature = "smoke-page-fault")]
     smoke::page_fault::smoke();
     #[cfg(feature = "smoke-kernel-thread")]

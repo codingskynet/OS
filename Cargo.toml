@@ -31,5 +31,7 @@ crossbeam-utils = { version = "0.8", default-features = false }
 derive_more = { version = "2", default-features = false, features = ["full"] }
 either = { version = "1.16.0", default-features = false }
 extend = { version = "1.2", default-features = false }
+hashbrown = { version = "0.17.1", default-features = false, features = ["default-hasher"] }
+tar-no-std = { version = "0.4.2", default-features = false }
 thiserror = { version = "2", default-features = false }
 winnow = { version = "1.0.3", default-features = false, features = ["binary"] }

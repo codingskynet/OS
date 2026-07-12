@@ -5,8 +5,7 @@ use core::mem::{self, ManuallyDrop};
 use core::ptr;
 
 use crate::arch;
-use crate::arch::consts::STACK_SIZE;
-use crate::arch::switch::{_switch, _switch_to, SwitchContext};
+use crate::fs::FsContext;
 use crate::kernel::scheduler::SCHEDULER;
 use crate::mm::addr::Va;
 
@@ -27,7 +26,7 @@ pub fn jump_to_idle() -> ! {
     });
 
     idle.state = ThreadState::Running;
-    unsafe { _switch_to(Box::into_raw(idle).as_ref().unwrap().context()) }
+    unsafe { arch::switch::_switch_to(Box::into_raw(idle).as_ref().unwrap().context()) }
 }
 
 fn exit_current() -> ! {
@@ -56,13 +55,14 @@ pub enum ThreadState {
 #[repr(C, align(16384))]
 pub struct Thread {
     state: ThreadState,
-    context: SwitchContext,
+    switch: arch::switch::SwitchContext,
+    fs: Option<FsContext>,
     entry: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl Thread {
     pub fn new(entry: impl FnOnce() + Send + 'static) -> Box<Thread> {
-        assert_eq!(mem::size_of::<Self>(), STACK_SIZE.get());
+        assert_eq!(mem::size_of::<Self>(), arch::consts::STACK_SIZE.get());
 
         // Avoid materializing the 16 KiB, 16 KiB-aligned thread object on the
         // current stack before moving it into the heap allocation.
@@ -70,7 +70,8 @@ impl Thread {
             let mut thread = Box::<Self>::new_uninit();
             let thread_ptr = thread.as_mut_ptr();
             ptr::addr_of_mut!((*thread_ptr).state).write(ThreadState::Ready);
-            ptr::addr_of_mut!((*thread_ptr).context).write(SwitchContext::default());
+            ptr::addr_of_mut!((*thread_ptr).switch).write(arch::switch::SwitchContext::default());
+            ptr::addr_of_mut!((*thread_ptr).fs).write(None);
             ptr::addr_of_mut!((*thread_ptr).entry).write(Some(Box::new(entry)));
             thread.assume_init()
         };
@@ -78,13 +79,13 @@ impl Thread {
         let stack_top = thread.stack_top();
         let thread_ptr = Va::from(&*thread);
         thread
-            .context
+            .switch
             .as_kernel_thread_trampoline(stack_top, thread_ptr);
         thread
     }
 
     pub fn context(&self) -> &arch::switch::SwitchContext {
-        &self.context
+        &self.switch
     }
 
     pub fn stack_top(&self) -> Va {
@@ -110,7 +111,7 @@ impl Thread {
                 // stays parked in this suspended stack frame until this call
                 // returns on a later switch back to `current`.
                 unsafe {
-                    _switch(&mut current.context, &thread.context, current);
+                    arch::switch::_switch(&mut current.switch, &thread.switch, current);
                 }
             }
         });

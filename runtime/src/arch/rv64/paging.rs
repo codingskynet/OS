@@ -9,7 +9,7 @@ use crate::mm::region::Region;
 
 const SATP_PPN_MASK: usize = (1usize << 44) - 1;
 
-fn active_root() -> &'static mut PageTable {
+pub fn active_root() -> &'static mut PageTable {
     let satp: usize;
     unsafe {
         asm!(

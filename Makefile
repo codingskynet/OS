@@ -41,7 +41,7 @@ RUSTFLAGS := \
 	-C link-arg=--no-relax \
 	-C link-arg=--orphan-handling=error
 
-.PHONY: all setup build image run clean fmt clippy typos test doc-check open-doc check check-boot-sections
+.PHONY: all setup initarfs build image run clean fmt clippy typos test doc-check open-doc check check-boot-sections FORCE
 
 all: build image
 
@@ -49,7 +49,16 @@ setup:
 	@echo "==> Installing dependencies..."
 	@scripts/setup.sh
 
-build:
+# Pass PORTS="micropython ..." to operate on selected ports only.
+ports-%: FORCE
+	+$(MAKE) -C userland $@ PORTS="$(PORTS)"
+
+FORCE:
+
+initarfs:
+	+$(MAKE) -C userland initarfs
+
+build: initarfs
 	RUSTFLAGS="$(RUSTFLAGS) $(PROFILE_RUSTFLAGS)" cargo rustc -p boot --bin boot --target=$(ARCH) $(CARGO_FLAGS) $(FEATURE_FLAGS)
 
 $(ARTIFACTS_DIR):
@@ -76,7 +85,7 @@ fmt:
 	./fmt
 
 clippy:
-	cargo clippy -p boot --bin kernel --target=$(ARCH) $(FEATURE_FLAGS)
+	cargo clippy --target=$(ARCH) $(FEATURE_FLAGS)
 
 typos:
 	typos
