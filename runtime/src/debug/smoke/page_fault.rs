@@ -1,6 +1,4 @@
-use core::arch::asm;
-
-use crate::debug;
+use crate::{asm, debug};
 
 pub const PAGE_FAULT_SMOKE_ADDR: usize = 0x3939_3939;
 
