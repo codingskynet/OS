@@ -136,7 +136,7 @@ impl<'a, A: Allocator> Deref for PageTableEntryCursor<'a, A> {
 
 impl<'a, A: Allocator> DerefMut for PageTableEntryCursor<'a, A> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.entry
+        self.entry
     }
 }
 

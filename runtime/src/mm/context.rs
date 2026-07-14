@@ -12,6 +12,12 @@ pub struct MmContext {
     mappings: Mappings,
 }
 
+impl Default for MmContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MmContext {
     pub fn new() -> Self {
         let page_table = unsafe {
