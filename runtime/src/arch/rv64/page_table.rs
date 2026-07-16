@@ -160,8 +160,12 @@ impl PageTable {
             let page_table = page_table.assume_init_mut();
             for entry in page_table[upper_start..].iter() {
                 if entry.is_valid() && !entry.is_leaf() {
-                    // The copied PTE owns this newly acquired raw reference.
-                    mem::forget(Pages::from_raw(entry.address()).clone());
+                    // Reconstitute the active root's raw reference, clone it
+                    // for the copied PTE, then return both handles to raw
+                    // ownership so neither PTE loses its strong reference.
+                    let pages = Pages::from_raw(entry.address());
+                    mem::forget(pages.clone());
+                    mem::forget(pages);
                 }
             }
             page_table

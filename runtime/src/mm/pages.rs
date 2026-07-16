@@ -55,13 +55,6 @@ impl Pages {
             meta: unsafe { SharedPageMeta::new(page_meta_at(addr)) },
         }
     }
-
-    /// Transfer this handle's reference to a raw physical-page owner.
-    pub fn into_raw(self) -> Pa {
-        let addr = self.addr();
-        mem::forget(self);
-        addr
-    }
 }
 
 impl Drop for Pages {
