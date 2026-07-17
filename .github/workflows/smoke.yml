@@ -52,16 +52,11 @@ jobs:
 
       - name: Run smoke tests in QEMU
         run: |
-          set +e
-          timeout 20s make run DEBUG=1 FEATURES=smoke > qemu-smoke.log 2>&1
-          status=$?
-          set -e
-
-          cat qemu-smoke.log
-
-          if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
-            exit "$status"
-          fi
+          bash scripts/run-until-output.sh \
+            120 \
+            qemu-smoke.log \
+            "smoke finish" \
+            make run DEBUG=1 FEATURES=smoke
 
           grep -q "allocator fuzz: ok" qemu-smoke.log
           grep -q "smoke-initarfs: done bytes=29" qemu-smoke.log
@@ -83,21 +78,16 @@ jobs:
 
       - name: Run MicroPython smoke test in QEMU
         run: |
-          set +e
           {
             # Enter paste mode and execute the script shipped in the rootfs.
             printf '\005'
             cat userland/rootfs/eratosthenes.py
             printf '\004'
-          } | timeout 20s make run > qemu-micropython.log 2>&1
-          status=$?
-          set -e
-
-          cat qemu-micropython.log
-
-          if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
-            exit "$status"
-          fi
+          } | bash scripts/run-until-output.sh \
+            120 \
+            qemu-micropython.log \
+            "smoke finish" \
+            make run
 
           grep -q "MicroPython .*; os with rv64gc" qemu-micropython.log
           grep -Fq "eratosthenes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97]" qemu-micropython.log

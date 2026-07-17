@@ -14,3 +14,4 @@ while candidate * candidate <= limit:
 
 primes = [number for number in range(1, limit + 1) if is_prime[number]]
 print("eratosthenes:", primes)
+print("smoke", "finish")
