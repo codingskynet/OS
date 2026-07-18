@@ -10,9 +10,7 @@ use core::num::NonZeroUsize;
 
 use crate::arch::consts::PAGE_SIZE;
 use crate::mm::addr::Pa;
-use crate::mm::page_meta::{
-    Buddy, OwnedPageMeta, PageMeta, PageMetaState, RefMutSliceOfPageMetaExt,
-};
+use crate::mm::page_meta::{Buddy, OwnedPageMeta, PageMeta, RefMutSliceOfPageMetaExt};
 
 /// Physical page-frame buddy allocator.
 ///

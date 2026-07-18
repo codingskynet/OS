@@ -71,6 +71,61 @@ macro_rules! asm {
     };
 }
 
+/// Define an error-code type whose every value is a
+/// [`NonZeroUsize`](core::num::NonZeroUsize).
+///
+/// The generated type is transparent over `NonZeroUsize`, and each listed
+/// error is exposed as an associated constant so call sites can continue to
+/// use enum-like paths such as `Error::InvalidBuffer`.  Error codes are
+/// constructed in a const context; assigning zero therefore fails to compile.
+///
+/// ```ignore
+/// nonzero_enum! {
+///     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///     pub struct Error {
+///         InvalidBuffer = 1,
+///         BadFileDescriptor = 2,
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! nonzero_enum {
+    (
+        $(#[$type_meta:meta])*
+        $vis:vis struct $name:ident {
+            $(
+                $(#[$error_meta:meta])*
+                $error:ident = $code:expr
+            ),+ $(,)?
+        }
+    ) => {
+        $(#[$type_meta])*
+        #[repr(transparent)]
+        $vis struct $name(::core::num::NonZeroUsize);
+
+        #[allow(non_upper_case_globals)]
+        impl $name {
+            $(
+                $(#[$error_meta])*
+                $vis const $error: Self = Self(
+                    ::core::num::NonZeroUsize::new($code)
+                        .expect("error code must be nonzero"),
+                );
+            )+
+
+            $vis const fn code(self) -> ::core::num::NonZeroUsize {
+                self.0
+            }
+        }
+
+        impl ::core::convert::From<$name> for ::core::num::NonZeroUsize {
+            fn from(error: $name) -> Self {
+                error.code()
+            }
+        }
+    };
+}
+
 // Map numeric codes to enum variants, with optional payload bindings.
 // Used for trap cause decoding (`scause` + `stval`) and for syscall number
 // decoding (register arguments).
