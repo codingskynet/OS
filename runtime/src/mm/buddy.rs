@@ -2,7 +2,7 @@
 //!
 //! Free blocks are tracked by order. Each block is represented by the first
 //! page's metadata; the remaining pages in the block stay in
-//! [`PageMetaState::BuddyReserved`] to prevent them from being owned
+//! [`PageMetaState::BuddyReserved`](crate::mm::page_meta::PageMetaState::BuddyReserved) to prevent them from being owned
 //! independently.
 
 use core::cmp::{Ordering, min};
