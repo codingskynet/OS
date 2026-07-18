@@ -1,45 +1,15 @@
-//! Composable `asm!` wrapper, plus small declarative helpers.
+//! Declarative macros shared across the runtime.
 //!
-//! # `asm!`
+//! This module provides:
 //!
-//! Drop-in name for `core::arch::asm`. Call sites should `use crate::asm`
-//! instead of `use core::arch::asm`. Keep using `core::arch::naked_asm` for
-//! naked functions; fragments still go through `asm!(@asm_lines(...))`.
+//! - [`crate::asm!`], a composable wrapper around [`core::arch::asm`].
+//! - [`crate::nonzero_enum!`], for defining error-code types backed by
+//!   [`NonZeroUsize`](core::num::NonZeroUsize).
+//! - [`crate::args_enum!`], for decoding numeric codes and their arguments
+//!   into enum variants.
 //!
-//! The top-level interface matches core: comma-separated template strings,
-//! then operands / `options(...)`. Core joins adjacent template arguments
-//! with newlines; nested fragments must therefore expand to a *single*
-//! string and put `\n` between their own instructions.
-//!
-//! ## Nesting protocol
-//!
-//! `@asm_lines` takes comma-separated items. Each item is either:
-//! - a string literal — used as one instruction, or
-//! - a `(part, part, ...)` tuple — parts are `concat!`enated into one instruction.
-//!
-//! A trailing `\n` is appended to each instruction so the fragment fills one
-//! outer template slot:
-//!
-//! ```ignore
-//! use core::arch::naked_asm;
-//!
-//! naked_asm!(
-//!     "csrr t0, sstatus",
-//!     store_regs!("a0"),   // → one string with internal `\n`s
-//!     "ret",
-//!     ra = const 0,
-//! );
-//!
-//! // fragment:
-//! macro_rules! store_regs {
-//!     ($base:literal) => {
-//!         $crate::asm!(@asm_lines(
-//!             ("sd ra, {ra}(", $base, ")"),
-//!             ("sd sp, {sp}(", $base, ")"),
-//!         ))
-//!     };
-//! }
-//! ```
+//! The public macros are exported at the crate root so call sites can import
+//! them directly, for example with `use crate::asm`.
 
 /// Expand one `@asm_lines` item: a string literal or a `(parts…)` tuple.
 #[macro_export]
@@ -55,10 +25,51 @@ macro_rules! __asm_item {
     };
 }
 
-/// Nested-friendly wrapper around [`core::arch::asm`].
+/// A composable, drop-in wrapper around [`core::arch::asm`].
 ///
-/// Top-level `$($t:tt)*` forwards unchanged (same `,`-separated interface as
-/// core). Use `@asm_lines` from fragment macros.
+/// Call sites should import this macro with `use crate::asm` instead of
+/// importing `core::arch::asm` directly. Naked functions should continue to
+/// use [`core::arch::naked_asm`], while reusable instruction fragments can be
+/// constructed with `asm!(@asm_lines(...))`.
+///
+/// # Top-level interface
+///
+/// Regular invocations are forwarded unchanged, preserving the core macro's
+/// comma-separated template strings, operands, and `options(...)` interface.
+/// Core joins adjacent template strings with newlines, so a nested fragment
+/// must expand to one string containing its own `\n` separators.
+///
+/// # Composable instruction fragments
+///
+/// `@asm_lines` accepts comma-separated items. Each item is either:
+///
+/// - A string literal representing one instruction.
+/// - A `(part, part, ...)` tuple whose parts are concatenated into one
+///   instruction.
+///
+/// Each generated instruction ends with `\n`, allowing the complete fragment
+/// to occupy one outer assembly template slot.
+///
+/// ```ignore
+/// use core::arch::naked_asm;
+///
+/// macro_rules! store_regs {
+///     ($base:literal) => {
+///         $crate::asm!(@asm_lines(
+///             ("sd ra, {ra}(", $base, ")"),
+///             ("sd sp, {sp}(", $base, ")"),
+///         ))
+///     };
+/// }
+///
+/// naked_asm!(
+///     "csrr t0, sstatus",
+///     store_regs!("a0"),
+///     "ret",
+///     ra = const 0,
+///     sp = const 8,
+/// );
+/// ```
 #[macro_export]
 macro_rules! asm {
     // Fragment output: `str` or `(parts…)` per instruction, `\n` after each.
@@ -126,10 +137,14 @@ macro_rules! nonzero_enum {
     };
 }
 
-// Map numeric codes to enum variants, with optional payload bindings.
-// Used for trap cause decoding (`scause` + `stval`) and for syscall number
-// decoding (register arguments).
-
+/// Defines an enum that decodes numeric codes and optional argument payloads.
+///
+/// Each declared code maps to a generated enum variant, while unmatched codes
+/// are preserved in an `Unknown` variant. Variants can bind values derived
+/// from the arguments passed to the generated `new` function.
+///
+/// This is used for trap-cause decoding from `scause` and `stval`, and for
+/// decoding syscall numbers and register arguments.
 #[macro_export]
 macro_rules! args_enum {
     (
