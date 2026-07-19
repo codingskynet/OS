@@ -6,9 +6,10 @@ edition.workspace = true
 [features]
 smoke = ["runtime/smoke"]
 smoke-allocator = ["runtime/smoke-allocator"]
+smoke-floating-point = ["runtime/smoke-floating-point"]
 smoke-initarfs = ["runtime/smoke-initarfs"]
-smoke-page-fault = ["runtime/smoke-page-fault"]
 smoke-kernel-thread = ["runtime/smoke-kernel-thread"]
+smoke-page-fault = ["runtime/smoke-page-fault"]
 smoke-userland = ["runtime/smoke-userland"]
 
 [lints]
