@@ -1,14 +1,15 @@
 //! RISC-V kernel-thread context switching.
 //!
-//! Switch contexts store callee-saved state plus the saved stack, return
-//! address, first argument, and interrupt-enable bit needed to suspend and
-//! resume kernel threads.
+//! Switch contexts store callee-saved integer state plus the complete RV64D
+//! floating-point state needed to suspend and resume kernel threads. Kernel
+//! code runs with `sstatus.FS=Off`; the switch assembly enables the FPU only
+//! while copying a context and disables it again before calling Rust code.
 
 use core::arch::naked_asm;
 use core::mem::offset_of;
 
-use crate::arch::asm::interrupt::SSTATUS_SIE;
-use crate::arch::regs::CalleeSavedRegs;
+use crate::arch::Sstatus;
+use crate::arch::regs::{CalleeSavedRegs, FpRegs};
 use crate::kernel::thread::Thread;
 use crate::mm::addr::Va;
 
@@ -21,6 +22,8 @@ pub struct SwitchContext {
     sp: usize,
     a0: usize,
     sstatus: usize,
+    fp_regs: FpRegs,
+    fcsr: usize,
 }
 
 impl SwitchContext {
@@ -28,11 +31,10 @@ impl SwitchContext {
         self.ra = _kernel_thread_trampoline as *const u8 as usize;
         self.sp = sp.as_raw();
         self.a0 = entry.as_raw();
-        self.sstatus = SSTATUS_SIE; // start from interrupt-enabled
+        self.sstatus = Sstatus::SIE.bits(); // start from interrupt-enabled
     }
 }
 
-#[rustfmt::skip]
 macro_rules! restore_sie_from {
     ($reg:literal) => {
         $crate::asm!(@asm_lines(
@@ -48,7 +50,6 @@ macro_rules! restore_sie_from {
     };
 }
 
-#[rustfmt::skip]
 macro_rules! store_regs {
     ($base:literal) => {
         $crate::asm!(@asm_lines(
@@ -70,7 +71,6 @@ macro_rules! store_regs {
     };
 }
 
-#[rustfmt::skip]
 macro_rules! restore_regs {
     ($base:literal) => {
         $crate::asm!(@asm_lines(
@@ -93,6 +93,45 @@ macro_rules! restore_regs {
     };
 }
 
+// Naked assembly is lowered as global assembly, where rustc does not currently
+// pass the target's D extension to LLVM's assembler. Enable it only around one
+// FP instruction fragment so the option cannot leak into surrounding assembly.
+macro_rules! fp_asm {
+    ($($item:tt),+ $(,)?) => {
+        $crate::asm!(@asm_lines(
+            ".option push",
+            ".option arch, +d",
+            $($item,)+
+            ".option pop",
+        ))
+    };
+}
+
+// Generate one load or store for every contiguous RV64D register slot.
+macro_rules! fp_regs_asm {
+    ($instruction:literal, $base:literal) => {
+        fp_regs_asm!(@expand $instruction, $base;
+            f0 => 0, f1 => 8, f2 => 16, f3 => 24,
+            f4 => 32, f5 => 40, f6 => 48, f7 => 56,
+            f8 => 64, f9 => 72, f10 => 80, f11 => 88,
+            f12 => 96, f13 => 104, f14 => 112, f15 => 120,
+            f16 => 128, f17 => 136, f18 => 144, f19 => 152,
+            f20 => 160, f21 => 168, f22 => 176, f23 => 184,
+            f24 => 192, f25 => 200, f26 => 208, f27 => 216,
+            f28 => 224, f29 => 232, f30 => 240, f31 => 248,
+        )
+    };
+
+    (@expand $instruction:literal, $base:literal;
+        $($reg:ident => $offset:literal),+ $(,)?) => {
+        fp_asm!(
+            $((
+                $instruction, " ", stringify!($reg), ", ", stringify!($offset), "(", $base, ")"
+            ),)+
+        )
+    };
+}
+
 macro_rules! switch_context_naked_asm {
     ($($template:expr),+ $(,)?) => {
         switch_context_naked_asm!($($template,)* ;)
@@ -102,7 +141,7 @@ macro_rules! switch_context_naked_asm {
         naked_asm!(
             $($template,)*
             $($extra_operand)*
-            sie = const SSTATUS_SIE,
+            sie = const Sstatus::SIE.bits(),
             ra = const offset_of!(SwitchContext, ra),
             sp = const offset_of!(SwitchContext, sp),
             a0 = const offset_of!(SwitchContext, a0),
@@ -134,7 +173,6 @@ macro_rules! switch_context_naked_asm {
 /// valid until their saved contexts are resumed or `after_switch` observes that
 /// one has exited. This routine restores `next`, activates its page table
 /// through `after_switch`, then returns into `next`'s saved `ra`.
-#[rustfmt::skip]
 #[unsafe(naked)]
 pub unsafe extern "C" fn _switch(
     _current: *mut SwitchContext,
@@ -142,10 +180,45 @@ pub unsafe extern "C" fn _switch(
     _prev: *mut Thread,
 ) {
     switch_context_naked_asm!(
+        // Read the outgoing kernel thread's supervisor status.
         "csrr t0, sstatus",
+        // Save it before temporarily enabling floating-point instructions.
         "sd t0, {sstatus}(a0)",
+        // TODO: Track FS state and the hart's FP owner so threads that do not
+        // use floating point can skip these eager save/restore operations.
+        // Build the temporary FS=Dirty value that permits FP instructions.
+        "li t0, {fs_dirty}",
+        // Enable the FPU only for the context-copy sequence below.
+        "csrs sstatus, t0",
+        // Point at the outgoing thread's FP register save area.
+        "addi t0, a0, {fp_regs}",
+        // Save all 32 outgoing RV64D registers.
+        fp_regs_asm!("fsd", "t0"),
+        // Read the outgoing floating-point control and status register.
+        fp_asm!(
+            "frcsr t1",
+            // Save its rounding mode and accumulated exception flags.
+            "sd t1, {fcsr}(a0)",
+        ),
+        // Point at the incoming thread's FP register save area.
+        "addi t0, a1, {fp_regs}",
+        // Restore all 32 incoming RV64D registers.
+        fp_regs_asm!("fld", "t0"),
+        // Load the incoming floating-point control and status register.
+        fp_asm!(
+            "ld t1, {fcsr}(a1)",
+            // Restore its rounding mode and accumulated exception flags.
+            "fscsr t1",
+        ),
+        // Build the mask for both FS bits.
+        "li t0, {fs}",
+        // Disable the FPU again before returning to ordinary kernel code.
+        "csrc sstatus, t0",
+        // Save the outgoing thread's integer callee-saved register state.
         store_regs!("a0"),
+        // Restore the incoming thread's integer callee-saved register state.
         restore_regs!("a1"),
+        // Load the incoming thread's saved supervisor status.
         "ld t0, {sstatus}(a1)",
         // Preserve values that are needed after `_after_switch(prev)` returns.
         // At this point `sp` belongs to `next`, so this scratch frame is on the
@@ -170,6 +243,10 @@ pub unsafe extern "C" fn _switch(
         "ret",
         ;
         after_switch = sym crate::kernel::thread::_after_switch,
+        fs = const Sstatus::FS.bits(),
+        fs_dirty = const Sstatus::FS_DIRTY.bits(),
+        fp_regs = const offset_of!(SwitchContext, fp_regs),
+        fcsr = const offset_of!(SwitchContext, fcsr),
     )
 }
 
@@ -183,9 +260,13 @@ pub unsafe extern "C" fn _switch(
 #[unsafe(naked)]
 pub unsafe extern "C" fn _switch_to(_next: *const SwitchContext) -> ! {
     switch_context_naked_asm!(
+        // Load the first thread's saved supervisor status.
         "ld t0, {sstatus}(a0)",
+        // Restore the first thread's integer register state.
         restore_regs!("a0"),
+        // Restore its saved supervisor interrupt-enable state.
         restore_sie_from!("t0"),
+        // Enter the first thread at its saved return address.
         "ret",
     )
 }

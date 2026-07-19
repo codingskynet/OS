@@ -1,0 +1,103 @@
+From c3fd47ecd1eab43847de40b96fbccab650dee121 Mon Sep 17 00:00:00 2001
+From: Taewoo An <2046664@gmail.com>
+Date: Sun, 19 Jul 2026 14:29:35 +0900
+Subject: feat: add friendly REPL help commands
+
+---
+ ports/os/mpconfigport.h |  2 ++
+ shared/runtime/pyexec.c | 41 +++++++++++++++++++++++++++++++++++++++--
+ 2 files changed, 41 insertions(+), 2 deletions(-)
+
+diff --git a/ports/os/mpconfigport.h b/ports/os/mpconfigport.h
+index 9d80c60..1edeba4 100644
+--- a/ports/os/mpconfigport.h
++++ b/ports/os/mpconfigport.h
+@@ -17,6 +17,8 @@
+ 
+ #define MICROPY_ENABLE_GC                 (1)
+ #define MICROPY_HELPER_REPL               (1)
++#define MICROPY_PY_BUILTINS_HELP          (1)
++#define MICROPY_REPL_HELP_COMMANDS        (1)
+ #define MICROPY_MODULE_FROZEN_MPY         (0)
+ #define MICROPY_ENABLE_EXTERNAL_IMPORT    (1)
+ #define MICROPY_HAS_FILE_READER           (1)
+diff --git a/shared/runtime/pyexec.c b/shared/runtime/pyexec.c
+index 867bf58..77d0070 100644
+--- a/shared/runtime/pyexec.c
++++ b/shared/runtime/pyexec.c
+@@ -55,6 +55,36 @@ static bool repl_display_debugging_info = 0;
+ #define EXEC_FLAG_SOURCE_IS_READER      (1 << 6)
+ #define EXEC_FLAG_NO_INTERRUPT          (1 << 7)
+ 
++#if MICROPY_PY_BUILTINS_HELP
++#if defined(MICROPY_REPL_HELP_COMMANDS) && MICROPY_REPL_HELP_COMMANDS
++static void pyexec_repl_expand_help_command(vstr_t *line) {
++    size_t start = 0;
++    size_t end = line->len;
++    while (start < end && (line->buf[start] == ' ' || line->buf[start] == '\t')) {
++        ++start;
++    }
++    while (end > start && (line->buf[end - 1] == ' ' || line->buf[end - 1] == '\t')) {
++        --end;
++    }
++
++    size_t len = end - start;
++    if ((len == 1 && line->buf[start] == '?') ||
++        (len == 4 && memcmp(line->buf + start, "help", len) == 0)) {
++        vstr_reset(line);
++        vstr_add_str(line, "help()");
++    }
++}
++
++static void pyexec_repl_print_help_hint(void) {
++    mp_hal_stdout_tx_str("Type \"help\" or \"?\" for more information.\r\n");
++}
++#else
++static void pyexec_repl_print_help_hint(void) {
++    mp_hal_stdout_tx_str("Type \"help()\" for more information.\r\n");
++}
++#endif
++#endif
++
+ // parses, compiles and executes the code in the lexer
+ // frees the lexer before returning
+ // EXEC_FLAG_PRINT_EOF prints 2 EOF chars: 1 after normal output, 1 after exception output
+@@ -452,7 +482,7 @@ static int pyexec_friendly_repl_process_char(int c) {
+             mp_hal_stdout_tx_str("; " MICROPY_BANNER_MACHINE);
+             mp_hal_stdout_tx_str("\r\n");
+             #if MICROPY_PY_BUILTINS_HELP
+-            mp_hal_stdout_tx_str("Type \"help()\" for more information.\r\n");
++            pyexec_repl_print_help_hint();
+             #endif
+             goto input_restart;
+         } else if (ret == CHAR_CTRL_C) {
+@@ -476,6 +506,10 @@ static int pyexec_friendly_repl_process_char(int c) {
+             return 0;
+         }
+ 
++        #if MICROPY_PY_BUILTINS_HELP && defined(MICROPY_REPL_HELP_COMMANDS) && MICROPY_REPL_HELP_COMMANDS
++        pyexec_repl_expand_help_command(MP_STATE_VM(repl_line));
++        #endif
++
+         if (!mp_repl_continue_with_input(vstr_null_terminated_str(MP_STATE_VM(repl_line)))) {
+             goto exec;
+         }
+@@ -625,7 +659,7 @@ friendly_repl_reset:
+     mp_hal_stdout_tx_str("; " MICROPY_BANNER_MACHINE);
+     mp_hal_stdout_tx_str("\r\n");
+     #if MICROPY_PY_BUILTINS_HELP
+-    mp_hal_stdout_tx_str("Type \"help()\" for more information.\r\n");
++    pyexec_repl_print_help_hint();
+     #endif
+ 
+     // to test ctrl-C
+@@ -705,6 +739,9 @@ friendly_repl_reset:
+         } else if (vstr_len(&line) == 0) {
+             continue;
+         } else {
++            #if MICROPY_PY_BUILTINS_HELP && defined(MICROPY_REPL_HELP_COMMANDS) && MICROPY_REPL_HELP_COMMANDS
++            pyexec_repl_expand_help_command(&line);
++            #endif
+             // got a line with non-zero length, see if it needs continuing
+             while (mp_repl_continue_with_input(vstr_null_terminated_str(&line))) {
+                 vstr_add_byte(&line, '\n');
