@@ -35,7 +35,6 @@ impl SwitchContext {
     }
 }
 
-#[rustfmt::skip]
 macro_rules! restore_sie_from {
     ($reg:literal) => {
         $crate::asm!(@asm_lines(
@@ -51,7 +50,6 @@ macro_rules! restore_sie_from {
     };
 }
 
-#[rustfmt::skip]
 macro_rules! store_regs {
     ($base:literal) => {
         $crate::asm!(@asm_lines(
@@ -73,7 +71,6 @@ macro_rules! store_regs {
     };
 }
 
-#[rustfmt::skip]
 macro_rules! restore_regs {
     ($base:literal) => {
         $crate::asm!(@asm_lines(
@@ -96,7 +93,20 @@ macro_rules! restore_regs {
     };
 }
 
-#[rustfmt::skip]
+// Naked assembly is lowered as global assembly, where rustc does not currently
+// pass the target's D extension to LLVM's assembler. Enable it only around one
+// FP instruction fragment so the option cannot leak into surrounding assembly.
+macro_rules! fp_asm {
+    ($($item:tt),+ $(,)?) => {
+        $crate::asm!(@asm_lines(
+            ".option push",
+            ".option arch, +d",
+            $($item,)+
+            ".option pop",
+        ))
+    };
+}
+
 // Generate one load or store for every contiguous RV64D register slot.
 macro_rules! fp_regs_asm {
     ($instruction:literal, $base:literal) => {
@@ -114,9 +124,11 @@ macro_rules! fp_regs_asm {
 
     (@expand $instruction:literal, $base:literal;
         $($reg:ident => $offset:literal),+ $(,)?) => {
-        $crate::asm!(@asm_lines(
-            $(($instruction, " ", stringify!($reg), ", ", stringify!($offset), "(", $base, ")")),+
-        ))
+        fp_asm!(
+            $((
+                $instruction, " ", stringify!($reg), ", ", stringify!($offset), "(", $base, ")"
+            ),)+
+        )
     };
 }
 
@@ -161,7 +173,6 @@ macro_rules! switch_context_naked_asm {
 /// valid until their saved contexts are resumed or `after_switch` observes that
 /// one has exited. This routine restores `next`, activates its page table
 /// through `after_switch`, then returns into `next`'s saved `ra`.
-#[rustfmt::skip]
 #[unsafe(naked)]
 pub unsafe extern "C" fn _switch(
     _current: *mut SwitchContext,
@@ -184,17 +195,21 @@ pub unsafe extern "C" fn _switch(
         // Save all 32 outgoing RV64D registers.
         fp_regs_asm!("fsd", "t0"),
         // Read the outgoing floating-point control and status register.
-        "frcsr t1",
-        // Save its rounding mode and accumulated exception flags.
-        "sd t1, {fcsr}(a0)",
+        fp_asm!(
+            "frcsr t1",
+            // Save its rounding mode and accumulated exception flags.
+            "sd t1, {fcsr}(a0)",
+        ),
         // Point at the incoming thread's FP register save area.
         "addi t0, a1, {fp_regs}",
         // Restore all 32 incoming RV64D registers.
         fp_regs_asm!("fld", "t0"),
         // Load the incoming floating-point control and status register.
-        "ld t1, {fcsr}(a1)",
-        // Restore its rounding mode and accumulated exception flags.
-        "fscsr t1",
+        fp_asm!(
+            "ld t1, {fcsr}(a1)",
+            // Restore its rounding mode and accumulated exception flags.
+            "fscsr t1",
+        ),
         // Build the mask for both FS bits.
         "li t0, {fs}",
         // Disable the FPU again before returning to ordinary kernel code.
