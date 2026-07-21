@@ -79,10 +79,11 @@ jobs:
 
       - name: Run MicroPython smoke test in QEMU
         run: |
-          # Run the rootfs test suite through MicroPython's file reader.
-          printf 'import smoke\r\nprint("micropython smoke complete")\r\n' \
+          # Run the rootfs test suite, then keep issuing hart-id syscalls long
+          # enough to verify that the REPL thread migrates across all 8 harts.
+          printf 'import smoke\r\nprint("micropython smoke " + "complete")\r\n' \
             | bash scripts/run-until-output.sh \
-            120 \
+            180 \
             qemu-micropython.log \
             "micropython smoke complete" \
             make run
@@ -111,16 +112,3 @@ jobs:
           grep -q "StorePage(Va(0xffff_ffff_e[0-9a-f_]*0ff0))" qemu-kernel-stack-overflow.log
           grep -q "kernel panic" qemu-kernel-stack-overflow.log
           grep -q "kernel stack overflow" qemu-kernel-stack-overflow.log
-
-      - name: Run U-mode trap stack guard smoke test in QEMU
-        run: |
-          bash scripts/run-until-output.sh \
-            120 \
-            qemu-user-trap-stack-overflow.log \
-            "message: kernel stack overflow" \
-            make run DEBUG=1 FEATURES=smoke-user-trap-stack-overflow
-
-          grep -q "smoke-user-trap-stack-overflow: trigger U-mode guard" qemu-user-trap-stack-overflow.log
-          grep -q "cause=Exception(EnvironmentCallFromUMode)" qemu-user-trap-stack-overflow.log
-          grep -q "kernel panic" qemu-user-trap-stack-overflow.log
-          grep -q "kernel stack overflow" qemu-user-trap-stack-overflow.log

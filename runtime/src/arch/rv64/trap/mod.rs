@@ -54,13 +54,13 @@ use crate::arch::consts::{KERNEL_STACK_GUARD_SIZE, KERNEL_STACK_SLOT_SIZE, PAGE_
 use crate::arch::timer::handle_timer;
 use crate::arch::trap::exception::handle_exception;
 use crate::asm;
+use crate::kernel::per_core::PerCore;
 use crate::mm::addr::Va;
 
-// A U-mode trap needs one known-mapped location before it can borrow a GPR for
-// the guard calculation. This area is reserved at the top of the kernel stack.
-pub const TRAP_ENTRY_SCRATCH_SIZE: usize = 2 * size_of::<usize>();
-const ENTRY_T0: usize = 0;
-const ENTRY_USER_SP: usize = size_of::<usize>();
+// A U-mode trap needs one location from which to restore the kernel's per-core
+// pointer. Keep it as the trailing part of TrapFrame at the kernel-stack top.
+const TRAP_ENTRY_SCRATCH_SIZE: usize = size_of::<TrapEntryScratch>();
+const ENTRY_KERNEL_TP: usize = offset_of!(TrapEntryScratch, kernel_tp);
 
 pub fn init() {
     unsafe {
@@ -79,13 +79,12 @@ pub fn init() {
 /// # Safety
 ///
 /// `entry` and the memory below `user_sp` must be valid user mappings in the
-/// active address space. The `TRAP_ENTRY_SCRATCH_SIZE` bytes immediately below
+/// active address space. One complete [`TrapFrame`] immediately below
 /// `kernel_sp` must be mapped writable memory in the current thread's guarded
-/// kernel-stack slot. The selected frame itself may cross the lower boundary;
-/// trap entry detects that case before touching it. The entry sequence disables
-/// supervisor interrupts before changing the `sscratch` stack-switch contract.
+/// kernel-stack slot. The entry sequence disables supervisor interrupts before
+/// changing the `sscratch` stack-switch contract.
 #[unsafe(naked)]
-pub(crate) unsafe extern "C" fn enter_user(_entry: Va, _user_sp: Va, _kernel_sp: Va) -> ! {
+pub unsafe extern "C" fn enter_user(_entry: Va, _user_sp: Va, _kernel_sp: Va) -> ! {
     macro_rules! zero_regs {
         ($($reg:ident),+ $(,)?) => {
             $crate::asm!(@asm_lines(
@@ -101,6 +100,9 @@ pub(crate) unsafe extern "C" fn enter_user(_entry: Va, _user_sp: Va, _kernel_sp:
         // Reserve a known-mapped scratch area before entering U-mode. Trap
         // entry uses it before touching the prospective TrapFrame.
         "addi a2, a2, -{entry_scratch_size}",
+        // User mode owns tp. Preserve the current hart's PerCore pointer for
+        // the next U-mode trap before clearing the user register bank.
+        "sd tp, {entry_kernel_tp}(a2)",
         "csrw sscratch, a2",
         "li t0, {user_status}",
         "csrs sstatus, t0",
@@ -115,6 +117,7 @@ pub(crate) unsafe extern "C" fn enter_user(_entry: Va, _user_sp: Va, _kernel_sp:
         clear = const Sstatus::SPP.bits() | Sstatus::SIE.bits() | Sstatus::FS.bits(),
         user_status = const Sstatus::SPIE.bits() | Sstatus::FS_INITIAL.bits(),
         entry_scratch_size = const TRAP_ENTRY_SCRATCH_SIZE,
+        entry_kernel_tp = const ENTRY_KERNEL_TP,
     )
 }
 
@@ -123,9 +126,10 @@ pub(crate) unsafe extern "C" fn enter_user(_entry: Va, _user_sp: Va, _kernel_sp:
 /// # Safety
 ///
 /// Hardware must enter this function through `stvec`. For S-mode traps `sp`
-/// must identify the current thread's guarded kernel-stack slot and `sscratch`
-/// must be 0. For U-mode traps `sscratch` holds the mapped trap-entry scratch
-/// anchor installed by [`enter_user`].
+/// must identify the current thread's guarded kernel-stack slot, `sscratch`
+/// must be 0, and `tp` must point to the current hart's [`PerCore`]. For U-mode
+/// traps `sscratch` holds the mapped trap-entry scratch anchor installed by
+/// `enter_user`.
 /// It is naked because it saves the interrupted register state itself before
 /// calling Rust code.
 ///
@@ -176,39 +180,28 @@ pub unsafe extern "C" fn _trap_entry() -> ! {
                     $(
                         ("sd ", stringify!($scratch), ", {", stringify!($scratch), "}(sp)"),
                     )+
+                    "sd tp, {tp}(sp)",
                     "addi t0, sp, {frame_size}",
                     "sd t0, {saved_sp}(sp)",
                     "j 1f",
 
-                    // U-mode: preserve t0 and user sp in the known-mapped
-                    // scratch area, then clear sscratch. A fault from this
-                    // point onward therefore re-enters through the S-mode path.
+                    // U-mode starts from an empty kernel stack whose capacity
+                    // was asserted before enter_user, so build its frame
+                    // directly without a dynamic guard check.
                     "5:",
-                    "sd t0, {entry_t0}(sp)",
-                    "csrr t0, sscratch",
-                    "sd t0, {entry_user_sp}(sp)",
-                    "csrw sscratch, zero",
-
-                    // Validate the selected kernel sp - frame_size before the
-                    // first store to that frame.
-                    "addi t0, sp, -{frame_size}",
-                    "srli t0, t0, {page_shift}",
-                    "andi t0, t0, {slot_page_mask}",
-                    "addi t0, t0, -{guard_pages}",
-                    "sltiu t0, t0, {stack_pages}",
-                    "beqz t0, 9f",
-
-                    "addi sp, sp, -{frame_size}",
+                    "addi sp, sp, -{entry_scratch_offset}",
                     $(
                         ("sd ", stringify!($reg), ", {", stringify!($reg), "}(sp)"),
                     )+
-                    // t1 was not borrowed by the check. Recover t0 and user sp
-                    // from the scratch area immediately above this frame.
-                    "sd t1, {t1}(sp)",
-                    "ld t0, {frame_entry_t0}(sp)",
                     "sd t0, {t0}(sp)",
-                    "ld t0, {frame_entry_user_sp}(sp)",
+                    "sd t1, {t1}(sp)",
+                    "sd tp, {tp}(sp)",
+                    "csrr t0, sscratch",
                     "sd t0, {saved_sp}(sp)",
+                    "csrw sscratch, zero",
+                    // Kernel Rust code addresses PerCore through tp. Recover
+                    // it before the first possible call into Rust.
+                    "ld tp, {frame_entry_kernel_tp}(sp)",
 
                     "1:",
 
@@ -261,27 +254,35 @@ pub unsafe extern "C" fn _trap_entry() -> ! {
                     // Safe only because the sstatus restored above has SIE=0
                     // (see the SIE contract in the function doc): no interrupt
                     // can hit while sscratch holds the user sp.
+                    // Refresh the saved kernel tp in case the thread migrated
+                    // since its previous return to user mode.
+                    "sd tp, {frame_entry_kernel_tp}(sp)",
+                    "ld tp, {tp}(sp)",
                     "ld t0, {saved_sp}(sp)",
                     "csrw sscratch, t0",
                     $(
                         ("ld ", stringify!($scratch), ", {", stringify!($scratch), "}(sp)"),
                     )+
-                    "addi sp, sp, {frame_size}",
+                    "addi sp, sp, {entry_scratch_offset}",
                     "csrrw sp, sscratch, sp",
                     "sret",
 
                     "4:",
-                    // S-mode return: sscratch stays clear.
+                    // S-mode return: sscratch stays clear. `tp` is hart-local,
+                    // not thread-local, so keep the value of the hart on which
+                    // this kernel context resumed. Restoring the interrupted
+                    // value would point at the old hart after migration.
                     $(
                         ("ld ", stringify!($scratch), ", {", stringify!($scratch), "}(sp)"),
                     )+
                     "ld sp, {saved_sp}(sp)",
                     "sret",
 
-                    // A normal frame would land in a guard/hole. Switch to the
-                    // boot hart's 4 KiB panic stack before touching memory.
+                    // A normal frame would land in a guard/hole. Switch to this
+                    // hart's private panic stack before touching memory. stvec
+                    // is installed only after tp points to an initialized PerCore.
                     "8:",
-                    "la sp, {panic_stack}",
+                    "ld sp, {per_core_panic_stack}(tp)",
                     "addi sp, sp, 2047",
                     "addi sp, sp, 2047",
                     "addi sp, sp, 2",
@@ -292,6 +293,7 @@ pub unsafe extern "C" fn _trap_entry() -> ! {
                     $(
                         ("sd ", stringify!($scratch), ", {", stringify!($scratch), "}(sp)"),
                     )+
+                    "sd tp, {tp}(sp)",
                     "csrr t0, sscratch",
                     "sd t0, {saved_sp}(sp)",
                     "csrr t0, sstatus",
@@ -308,43 +310,12 @@ pub unsafe extern "C" fn _trap_entry() -> ! {
                     "mv a0, sp",
                     "tail {overflow_handler}",
 
-                    // U-mode overflow. Keep the entry-scratch address in t0
-                    // while switching to the emergency stack; it holds both
-                    // values consumed before validation.
-                    "9:",
-                    "mv t0, sp",
-                    "la sp, {panic_stack}",
-                    "addi sp, sp, 2047",
-                    "addi sp, sp, 2047",
-                    "addi sp, sp, 2",
-                    "addi sp, sp, -{frame_size}",
-                    $(
-                        ("sd ", stringify!($reg), ", {", stringify!($reg), "}(sp)"),
-                    )+
-                    "sd t1, {t1}(sp)",
-                    "ld t1, {entry_user_sp}(t0)",
-                    "sd t1, {saved_sp}(sp)",
-                    "ld t1, {entry_t0}(t0)",
-                    "sd t1, {t0}(sp)",
-                    "csrr t0, sstatus",
-                    "sd t0, {sstatus}(sp)",
-                    "li t1, {fs}",
-                    "csrc sstatus, t1",
-                    "csrr t0, sepc",
-                    "sd t0, {sepc}(sp)",
-                    "csrr t0, scause",
-                    "sd t0, {scause}(sp)",
-                    "csrr t0, stval",
-                    "sd t0, {stval}(sp)",
-                    "mv a0, sp",
-                    "tail {overflow_handler}",
                 )),
                 frame_size = const size_of::<TrapFrame>(),
+                entry_scratch_offset = const offset_of!(TrapFrame, entry_scratch),
                 saved_sp = const offset_of!(TrapFrame, regs.sp),
-                entry_t0 = const ENTRY_T0,
-                entry_user_sp = const ENTRY_USER_SP,
-                frame_entry_t0 = const size_of::<TrapFrame>() + ENTRY_T0,
-                frame_entry_user_sp = const size_of::<TrapFrame>() + ENTRY_USER_SP,
+                tp = const offset_of!(TrapFrame, regs.tp),
+                frame_entry_kernel_tp = const offset_of!(TrapFrame, entry_scratch) + ENTRY_KERNEL_TP,
                 page_shift = const PAGE_SIZE.get().trailing_zeros(),
                 slot_page_mask = const KERNEL_STACK_SLOT_SIZE / PAGE_SIZE.get() - 1,
                 guard_pages = const KERNEL_STACK_GUARD_SIZE / PAGE_SIZE.get(),
@@ -362,7 +333,7 @@ pub unsafe extern "C" fn _trap_entry() -> ! {
                 scause = const offset_of!(TrapFrame, scause),
                 stval = const offset_of!(TrapFrame, stval),
                 handler = sym _trap_handler,
-                panic_stack = sym crate::panic::PANIC_STACK,
+                per_core_panic_stack = const PerCore::PANIC_STACK_OFFSET,
                 overflow_handler = sym crate::panic::kernel_stack_overflow,
             )
         };
@@ -371,12 +342,17 @@ pub unsafe extern "C" fn _trap_entry() -> ! {
     trap_entry_asm!(
         scratch: [t0, t1],
         saved: [
-            ra, gp, tp,
+            ra, gp,
             a0, a1, a2, a3, a4, a5, a6, a7,
             t2, t3, t4, t5, t6,
             s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11,
         ],
     )
+}
+
+#[repr(C, align(16))]
+struct TrapEntryScratch {
+    kernel_tp: usize,
 }
 
 #[repr(C, align(16))]
@@ -386,16 +362,20 @@ pub struct TrapFrame {
     pub sstatus: Sstatus,
     pub scause: Scause,
     pub stval: usize,
+    entry_scratch: TrapEntryScratch,
 }
 
 const _: () = assert!(size_of::<TrapFrame>() <= STACK_SIZE.get());
-const _: () = assert!(size_of::<TrapFrame>() + TRAP_ENTRY_SCRATCH_SIZE <= STACK_SIZE.get());
+const _: () = assert!(
+    offset_of!(TrapFrame, entry_scratch) + TRAP_ENTRY_SCRATCH_SIZE == size_of::<TrapFrame>()
+);
 
 impl TrapFrame {
     pub fn cause(&self) -> TrapCause {
-        match self.scause.is_interrupt() {
-            true => TrapCause::Interrupt(Interrupt::new(self.scause.code())),
-            false => TrapCause::Exception(Exception::new(self.scause.code(), self.stval)),
+        if self.scause.is_interrupt() {
+            TrapCause::Interrupt(Interrupt::new(self.scause.code()))
+        } else {
+            TrapCause::Exception(Exception::new(self.scause.code(), self.stval))
         }
     }
 }

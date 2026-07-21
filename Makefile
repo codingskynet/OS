@@ -71,10 +71,11 @@ image: build | $(ARTIFACTS_DIR)
 
 run: image
 	qemu-system-riscv64 \
-		-machine virt \
-		-m $(MEMORY) \
-		-nographic \
-		-bios none \
+		-machine virt	\
+		-m $(MEMORY)	\
+		-smp 4	 		\
+		-nographic 		\
+		-bios none 		\
 		-kernel $(KERNEL_BIN)
 
 clean:

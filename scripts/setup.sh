@@ -17,7 +17,7 @@ if ! command -v zig &>/dev/null; then
 fi
 
 echo "==> Installing Rust toolchain components..."
-rustup component add llvm-tools-preview
+rustup component add llvm-tools
 cargo install cargo-binutils
 
 echo "==> Installing typos (spell checker)..."

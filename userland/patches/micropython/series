@@ -5,3 +5,4 @@
 0005-feat-enable-core-and-read-only-library-imports.patch
 0006-feat-enable-double-precision-math-module.patch
 0007-feat-add-friendly-REPL-help-commands.patch
+0008-feat-os-expose-current-hart-id-to-MicroPython.patch
