@@ -10,6 +10,7 @@
 //! [Devicetree Specification v0.4]:
 //!     https://github.com/devicetree-org/devicetree-specification/releases/download/v0.4/devicetree-specification-v0.4.pdf
 
+pub mod cpu;
 pub mod memory;
 pub mod prop;
 

@@ -8,6 +8,7 @@ use core::num::NonZeroUsize;
 use crate::arch::regs::GeneralRegs;
 use crate::args_enum;
 use crate::kernel::file::FileDescriptor;
+use crate::kernel::per_core::PerCore;
 use crate::kernel::thread::{self, CurrentThread};
 
 args_enum! {
@@ -18,6 +19,7 @@ args_enum! {
         2 => Read((FileDescriptor, usize, usize) = (a1.into(), a2, a3)),
         3 => Open((usize, usize) = (a1, a2)),
         4 => Close(FileDescriptor = a1.into()),
+        5 => HartId,
     }
 }
 
@@ -78,6 +80,7 @@ pub fn handle(syscall: Syscall) -> (usize, usize) {
             CurrentThread::with_mut(|thread| thread.open(addr, len)).into()
         }
         Syscall::Close(fd) => CurrentThread::with_mut(|thread| thread.close(fd)).into(),
+        Syscall::HartId => SyscallResult::ok(PerCore::with_mut(|per_core| per_core.hart_id)),
         Syscall::Unknown(number) => panic!("unhandled ecall from U-mode: number={number}"),
     };
     result.into()

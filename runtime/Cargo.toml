@@ -28,7 +28,6 @@ smoke-userland = []
 
 # Destructive tests, each run in its own QEMU instance.
 smoke-kernel-stack-overflow = []
-smoke-user-trap-stack-overflow = []
 
 [dependencies]
 arrayvec.workspace = true

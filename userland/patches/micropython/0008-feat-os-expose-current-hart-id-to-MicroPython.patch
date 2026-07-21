@@ -1,0 +1,116 @@
+From 4fc35bd77f5c3395a42e35fafc43ae50ee66723f Mon Sep 17 00:00:00 2001
+From: Taewoo An <2046664@gmail.com>
+Date: Tue, 21 Jul 2026 14:23:13 +0900
+Subject: feat(os): expose current hart id to MicroPython
+
+---
+ ports/os/Makefile     |  3 ++-
+ ports/os/README.md    | 10 ++++++++++
+ ports/os/modsmp.c     | 25 +++++++++++++++++++++++++
+ ports/os/os_syscall.h |  5 +++++
+ 4 files changed, 42 insertions(+), 1 deletion(-)
+ create mode 100644 ports/os/modsmp.c
+
+diff --git a/ports/os/Makefile b/ports/os/Makefile
+index ce6db62..89f7c32 100644
+--- a/ports/os/Makefile
++++ b/ports/os/Makefile
+@@ -63,6 +63,7 @@ CXXFLAGS += $(filter-out -std=c99,$(CFLAGS))
+ SRC_C = \
+ 	main.c \
+ 	math_shims.c \
++	modsmp.c \
+ 	uart_core.c \
+ 	shared/libc/printf.c \
+ 	shared/libc/string0.c \
+@@ -74,7 +75,7 @@ SRC_C = \
+ SRC_S = startup.S
+ SRC_S_LOWER = shared/runtime/gchelper_rv64i.s
+ 
+-SRC_QSTR += shared/readline/readline.c shared/runtime/pyexec.c
++SRC_QSTR += modsmp.c shared/readline/readline.c shared/runtime/pyexec.c
+ 
+ LIBM_SRC_C += $(filter-out lib/libm_dbl/copysign.c,$(SRC_LIB_LIBM_DBL_C))
+ LIBM_SRC_C += $(SRC_LIB_LIBM_DBL_SQRT_SW_C)
+diff --git a/ports/os/README.md b/ports/os/README.md
+index 4d2725d..49490c8 100644
+--- a/ports/os/README.md
++++ b/ports/os/README.md
+@@ -8,6 +8,7 @@ this repository. It uses the kernel's user syscall ABI directly:
+ - `a0 = 2`, `a1 = fd`, `a2 = buffer`, `a3 = length`: read
+ - `a0 = 3`, `a1 = path`, `a2 = length`: open
+ - `a0 = 4`, `a1 = fd`: close
++- `a0 = 5`: return the current hart ID
+ 
+ Every returning syscall places a status in `a0` and a value in `a1`. A zero
+ status denotes success and makes the full-width value valid; a nonzero status
+@@ -27,6 +28,15 @@ Python modules. Both `/lib/example.py` and packages such as
+ archive. General-purpose `open()` file objects are not implemented yet; the
+ read-only path currently applies to the module importer.
+ 
++The built-in `smp` module reports the hart on which the calling program is
++currently executing. From the REPL, call it repeatedly to observe scheduler
++migration:
++
++```python
++import smp
++smp.hart_id()
++```
++
+ ## Build
+ 
+ Install Zig once; it supplies the RISC-V cross compiler and target headers, so
+diff --git a/ports/os/modsmp.c b/ports/os/modsmp.c
+new file mode 100644
+index 0000000..d00a40f
+--- /dev/null
++++ b/ports/os/modsmp.c
+@@ -0,0 +1,25 @@
++#include "py/runtime.h"
++
++#include "os_syscall.h"
++
++static mp_obj_t mp_smp_hart_id(void) {
++    os_syscall_result_t result = os_hart_id();
++    if (result.status != 0) {
++        mp_raise_OSError(result.status);
++    }
++    return mp_obj_new_int_from_uint(result.value);
++}
++static MP_DEFINE_CONST_FUN_OBJ_0(mp_smp_hart_id_obj, mp_smp_hart_id);
++
++static const mp_rom_map_elem_t mp_module_smp_globals_table[] = {
++    {MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_smp)},
++    {MP_ROM_QSTR(MP_QSTR_hart_id), MP_ROM_PTR(&mp_smp_hart_id_obj)},
++};
++static MP_DEFINE_CONST_DICT(mp_module_smp_globals, mp_module_smp_globals_table);
++
++const mp_obj_module_t mp_module_smp = {
++    .base = {&mp_type_module},
++    .globals = (mp_obj_dict_t *)&mp_module_smp_globals,
++};
++
++MP_REGISTER_MODULE(MP_QSTR_smp, mp_module_smp);
+diff --git a/ports/os/os_syscall.h b/ports/os/os_syscall.h
+index aa0fcde..cfea2ce 100644
+--- a/ports/os/os_syscall.h
++++ b/ports/os/os_syscall.h
+@@ -10,6 +10,7 @@ enum {
+     OS_SYSCALL_READ = 2,
+     OS_SYSCALL_OPEN = 3,
+     OS_SYSCALL_CLOSE = 4,
++    OS_SYSCALL_HART_ID = 5,
+ };
+ 
+ enum {
+@@ -57,6 +58,10 @@ static inline os_syscall_result_t os_close(int fd) {
+     return os_syscall(OS_SYSCALL_CLOSE, (uintptr_t)fd, 0, 0);
+ }
+ 
++static inline os_syscall_result_t os_hart_id(void) {
++    return os_syscall(OS_SYSCALL_HART_ID, 0, 0, 0);
++}
++
+ static inline __attribute__((noreturn)) void os_exit(uintptr_t status) {
+     (void)os_syscall(OS_SYSCALL_EXIT, status, 0, 0);
+     __builtin_unreachable();

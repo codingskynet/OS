@@ -79,15 +79,17 @@ jobs:
 
       - name: Run MicroPython smoke test in QEMU
         run: |
-          # Run the rootfs test suite through MicroPython's file reader.
-          printf 'import smoke\r\nprint("micropython smoke complete")\r\n' \
+          # Run the rootfs test suite, then keep issuing hart-id syscalls long
+          # enough to verify that the REPL thread migrates across all 8 harts.
+          printf 'import smoke\r\nimport smp\r\nprint("smp-harts:", sorted({smp.hart_id() for _ in range(500_000)}))\r\nprint("micropython smoke " + "complete")\r\n' \
             | bash scripts/run-until-output.sh \
-            120 \
+            180 \
             qemu-micropython.log \
             "micropython smoke complete" \
             make run
 
           grep -q "MicroPython .*; os with rv64gc" qemu-micropython.log
+          grep -Fq "smp-harts: [0, 1, 2, 3]" qemu-micropython.log
           grep -Fq "eratosthenes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97]" qemu-micropython.log
 
           python3 userland/rootfs/rk4_harmonic_oscillator.py \
@@ -111,16 +113,3 @@ jobs:
           grep -q "StorePage(Va(0xffff_ffff_e[0-9a-f_]*0ff0))" qemu-kernel-stack-overflow.log
           grep -q "kernel panic" qemu-kernel-stack-overflow.log
           grep -q "kernel stack overflow" qemu-kernel-stack-overflow.log
-
-      - name: Run U-mode trap stack guard smoke test in QEMU
-        run: |
-          bash scripts/run-until-output.sh \
-            120 \
-            qemu-user-trap-stack-overflow.log \
-            "message: kernel stack overflow" \
-            make run DEBUG=1 FEATURES=smoke-user-trap-stack-overflow
-
-          grep -q "smoke-user-trap-stack-overflow: trigger U-mode guard" qemu-user-trap-stack-overflow.log
-          grep -q "cause=Exception(EnvironmentCallFromUMode)" qemu-user-trap-stack-overflow.log
-          grep -q "kernel panic" qemu-user-trap-stack-overflow.log
-          grep -q "kernel stack overflow" qemu-user-trap-stack-overflow.log

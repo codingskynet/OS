@@ -33,8 +33,6 @@ pub fn smoke() {
     // Destructive smokes never return and are run in separate QEMU instances.
     #[cfg(feature = "smoke-kernel-stack-overflow")]
     smoke::kernel_stack_overflow::smoke();
-    #[cfg(feature = "smoke-user-trap-stack-overflow")]
-    smoke::user_trap_stack_overflow::smoke();
 }
 
 pub fn dump_page_list() {

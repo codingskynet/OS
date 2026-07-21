@@ -143,6 +143,13 @@ SECTIONS
     . += STACK_SIZE;
     boot_stack_top = .;
 
+    /* Secondary harts serialize their short Rust initialization on this stack
+       before switching permanently to their runtime-owned idle stacks. */
+    . = ALIGN(16);
+    secondary_stack = .;
+    . += STACK_SIZE;
+    secondary_stack_top = .;
+
     . = ALIGN(PAGE_SIZE);
     _init_bss_end = .;
     _init_end = .;

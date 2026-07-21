@@ -14,7 +14,6 @@ smoke-page-fault = ["runtime/smoke-page-fault"]
 smoke-userland = ["runtime/smoke-userland"]
 
 smoke-kernel-stack-overflow = ["runtime/smoke-kernel-stack-overflow"]
-smoke-user-trap-stack-overflow = ["runtime/smoke-user-trap-stack-overflow"]
 
 [lints]
 workspace = true

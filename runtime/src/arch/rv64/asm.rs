@@ -65,6 +65,10 @@ pub mod interrupt {
         }
     }
 
+    pub fn wait() {
+        unsafe { asm!("wfi", options(nostack, preserves_flags)) }
+    }
+
     const SIE_STIE: usize = 1 << 5;
     pub fn allow_timer() {
         unsafe {
@@ -186,6 +190,52 @@ pub mod reg {
             );
         }
         sp
+    }
+
+    pub fn tp() -> usize {
+        let tp: usize;
+        unsafe {
+            asm!(
+                "mv {tp}, tp",
+                tp = out(reg) tp,
+                options(nomem, nostack, preserves_flags),
+            )
+        }
+        tp
+    }
+
+    /// Install the current hart's per-core pointer in `tp`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must remain a valid per-core pointer for as long as it is installed.
+    pub unsafe fn write_tp(ptr: usize) {
+        unsafe {
+            asm!(
+                "mv tp, {ptr}",
+                ptr = in(reg) ptr,
+                options(nostack, preserves_flags),
+            );
+        }
+    }
+}
+
+pub mod smp {
+    unsafe extern "C" {
+        fn _release_secondary_harts();
+    }
+
+    /// Release every parked secondary hart into the stackless runtime entry.
+    ///
+    /// Each hart obtains a distinct PerCore slot atomically, then serializes
+    /// its Rust initialization on the reclaimable secondary init stack.
+    ///
+    /// # Safety
+    ///
+    /// Global PerCore state and all idle stacks must be fully initialized, and
+    /// this function may be called only once.
+    pub unsafe fn release_secondary_harts() {
+        unsafe { _release_secondary_harts() }
     }
 }
 

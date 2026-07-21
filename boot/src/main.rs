@@ -13,7 +13,10 @@ use boot::{BootData, BootInfo};
 use runtime::dev::dt::Fdt;
 use runtime::mm::addr::Pa;
 
-global_asm!(include_str!("arch/rv64/boot.s"));
+global_asm!(
+    include_str!("arch/rv64/boot.s"),
+    kernel_vma_offset = const runtime::arch::consts::KERNEL_VMA_OFFSET,
+);
 
 /// Rust entry point, called from boot.s.
 ///

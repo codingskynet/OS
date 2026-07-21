@@ -75,6 +75,23 @@ impl Thread {
         thread
     }
 
+    /// Build one hart's idle context during primary-hart initialization.
+    ///
+    /// All idle contexts execute the same entry code, but each owns a distinct
+    /// [`Thread`], switch context, and guarded kernel stack. Two harts may be
+    /// idle concurrently, so those mutable execution resources cannot be
+    /// shared.
+    pub fn new_idle() -> Box<Thread> {
+        Self::new(|| {
+            crate::kernel::init::idle_online();
+            loop {
+                if !SCHEDULER.try_run_next() {
+                    arch::asm::interrupt::wait();
+                }
+            }
+        })
+    }
+
     pub fn exit_code(&self) -> Option<Arc<AtomicIsize>> {
         self.exit_code.clone()
     }

@@ -8,6 +8,7 @@ pub mod console;
 pub mod dt;
 pub mod file;
 pub mod init;
+pub mod per_core;
 pub mod scheduler;
 pub mod sync;
 pub mod syscall;

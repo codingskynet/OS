@@ -141,10 +141,11 @@ _start:
     # Re-read a0 from the CSR (idempotent), leave a1 untouched so the
     # device-tree pointer survives until _start_rust.
     csrr a0, mhartid                # a0 = hart id (from CSR, same as what QEMU set)
+    mv   tp, zero                   # no PerCore pointer is installed yet
 
-    # park harts with id != 0
-    bnez a0, park                   # if we're not on the hart 0
-                                    # we park the hart
+    # Only hart 0 performs global initialization. Other harts poll the release
+    # flag published after the shared kernel state is ready.
+    bnez a0, park
 
     # setup the boot stack used by hart 0 until Rust installs the runtime stack
     la   sp, boot_stack_top
@@ -180,6 +181,17 @@ _start:
  *  would trap.
  * ------------------------------------------------------------------------- */
 enter_supervisor_mode:
+    la   t2, supervisor_entry
+    j    configure_supervisor_mode
+
+/* ---------------------------------------------------------------------------
+ *  Per-hart M-mode setup shared by primary and secondary entry paths.
+ *
+ *  t2 contains the S-mode entry address. For the primary it is the physical
+ *  supervisor trampoline; for a secondary it is already the high runtime
+ *  address and satp has been installed while M-mode still ignores translation.
+ * ------------------------------------------------------------------------- */
+configure_supervisor_mode:
     # Give S-mode access to all physical memory for this early bootstrap path.
     # In TOR mode, pmpaddr0 is the top of the range encoded as address >> 2.
     # All ones therefore makes entry 0 cover the largest representable range.
@@ -213,8 +225,7 @@ enter_supervisor_mode:
     csrs mstatus, t0
 
     # mepc is the PC that mret jumps to after switching into S-mode.
-    la   t0, supervisor_entry
-    csrw mepc, t0
+    csrw mepc, t2
     mret
 
 supervisor_entry:
@@ -223,16 +234,53 @@ supervisor_entry:
 /* ---------------------------------------------------------------------------
  *  Secondary hart parking
  *
- *  Harts with id != 0 are parked here in WFI.  Later, when SMP bring-up is
- *  implemented, the primary hart can send an IPI or store a spin-table entry
- *  that releases each parked hart.  The spin-table protocol (used by Linux)
- *  polls a memory location; WFI is a gentler default.
+ *  Harts with id != 0 poll a release flag. Once it is published, every hart
+ *  enters a stackless runtime trampoline which atomically selects its PerCore
+ *  slot and acquires the reclaimable secondary init stack before calling Rust.
  * ------------------------------------------------------------------------- */
-.secondary_entry:
-    /* a0 already holds mhartid from the common path above.
-     * SMP bring-up will redirect harts here instead of park. */
-    j    BOOT_ENTRY
-
 park:
-    wfi
-    j park
+    la   t0, secondary_release
+1:  ld   t1, 0(t0)
+    bnez t1, 1b
+
+    # Acquire the satp value published before the release-hart store.
+    fence r, rw
+    la   t0, secondary_satp
+    ld   t3, 0(t0)
+
+    # Convert the stackless runtime entry from its physical alias to its linked
+    # high VA. It installs tp and sp before its first Rust call.
+    li   t0, {kernel_vma_offset}
+    la   t2, secondary_install
+    add  t2, t2, t0
+
+    # M-mode instruction fetch ignores satp, so it is safe to activate the
+    # final kernel root here and enter its high mapping with mret.
+    csrw satp, t3
+    sfence.vma zero, zero
+    j    configure_supervisor_mode
+
+/* ---------------------------------------------------------------------------
+ *  Primary-side release primitive, called from runtime/src/kernel/init.rs.
+ * ------------------------------------------------------------------------- */
+.section .init.text, "ax"
+.global _release_secondary_harts
+_release_secondary_harts:
+    # Publish the primary's active kernel page table before releasing every
+    # parked hart into the stackless runtime entry.
+    csrr t0, satp
+    la   t1, secondary_satp
+    sd   t0, 0(t1)
+    fence rw, w
+    la   t1, secondary_release
+    sd   zero, 0(t1)
+    ret
+
+/* The non-zero initializer prevents a secondary from observing its own hart
+ * id before the boot hart has zeroed BSS and completed global initialization. */
+.section .init.data, "aw"
+.align 3
+secondary_release:
+    .dword -1
+secondary_satp:
+    .dword 0

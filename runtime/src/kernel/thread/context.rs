@@ -5,36 +5,43 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::arch;
 use crate::arch::interrupt::InterruptGuard;
+use crate::kernel::per_core::PerCore;
 use crate::kernel::scheduler::SCHEDULER;
 use crate::kernel::thread::{Thread, ThreadState};
 use crate::mm::MmContext;
 use crate::mm::addr::Va;
 
-static CURRENT: CurrentThread = CurrentThread::empty(); // TODO: per-core
-
-/// Owns the running thread on the boot hart.
+/// Owns the running thread on one hart.
 ///
-/// Ready threads are owned by the scheduler. Immediately before a context
-/// switch, ownership moves here from the run queue and the previous running
-/// thread is converted to the raw pointer consumed by `_after_switch`.
+/// Ready threads are normally owned by the scheduler. The one exception is the
+/// idle context preinstalled before its hart starts; [`jump_to_scheduler`] promotes
+/// it directly to Running. Immediately before later context switches, ownership
+/// moves here from the run queue and the previous running thread is converted
+/// to the raw pointer consumed by `_after_switch`.
 ///
 /// The mutable-borrow flag is deliberately separate from ownership. It rejects
 /// reentrant `with_current_mut` calls before a second `&mut Thread` is
 /// constructed, and context switching is forbidden while such a borrow is live.
 pub struct CurrentThread {
-    thread: UnsafeCell<Option<Box<Thread>>>,
+    thread: UnsafeCell<Box<Thread>>,
     borrowed: AtomicBool,
 }
 
-// SAFETY: the kernel currently runs one hart. Every access to `thread` happens
-// with local interrupts disabled, and `borrowed` rejects reentrant mutable
-// access. SMP bring-up must replace this singleton with per-hart storage.
+// SAFETY: each CurrentThread is stored in one PerCore slot and, once installed,
+// is accessed only by the hart whose tp selects that slot. Local interrupts are
+// disabled around every access, and `borrowed` rejects reentrant mutable access
+// on that hart.
 unsafe impl Sync for CurrentThread {}
 
 impl CurrentThread {
-    pub const fn empty() -> Self {
+    /// Create a per-hart owner preloaded with its private idle context.
+    ///
+    /// The primary hart calls this while constructing the PerCore allocation,
+    /// before secondary harts are released. The context becomes Running only
+    /// when its hart calls [`jump_to_scheduler`].
+    pub fn with_idle() -> Self {
         Self {
-            thread: UnsafeCell::new(None),
+            thread: UnsafeCell::new(Thread::new_idle()),
             borrowed: AtomicBool::new(false),
         }
     }
@@ -42,7 +49,7 @@ impl CurrentThread {
     /// Run a non-switching operation with exclusive access to the current
     /// thread. Reentrant mutable access and scheduler entry from `f` panic.
     pub fn with_mut<R>(f: impl FnOnce(&mut Thread) -> R) -> R {
-        CURRENT.borrow().with_mut(f)
+        PerCore::with_mut(|per_core| per_core.current.borrow().with_mut(f))
     }
 
     pub fn replace_mm(mm: MmContext) {
@@ -64,19 +71,21 @@ impl CurrentThread {
     /// `entry` and the memory below `user_sp` must be valid user mappings in
     /// the current thread's active address space.
     pub unsafe fn enter_user(entry: Va, user_sp: Va) -> ! {
-        let kernel_sp = Self::with_mut(|thread| {
-            if cfg!(feature = "smoke-user-trap-stack-overflow") {
-                thread
-                    .stack_bottom()
-                    .offset(arch::trap::TRAP_ENTRY_SCRATCH_SIZE)
-            } else {
-                thread.stack_top()
-            }
+        let (kernel_sp, stack_bottom) = Self::with_mut(|thread| {
+            let stack_bottom = thread.stack_bottom();
+            (thread.stack_top(), stack_bottom)
         });
 
-        // SAFETY: normally `kernel_sp` is the mapped top of the guarded stack.
-        // The U-mode trap overflow smoke deliberately selects its mapped lower
-        // edge so trap entry must reject the frame before touching it.
+        debug_assert!(
+            kernel_sp
+                .as_raw()
+                .checked_sub(mem::size_of::<arch::trap::TrapFrame>())
+                .is_some_and(|frame_bottom| frame_bottom >= stack_bottom.as_raw()),
+            "kernel stack cannot hold a user trap frame",
+        );
+
+        // SAFETY: the assertion above proves that a complete TrapFrame fits in
+        // the current thread's mapped kernel stack below `kernel_sp`.
         unsafe { arch::trap::enter_user(entry, user_sp, kernel_sp) }
     }
 
@@ -93,13 +102,15 @@ impl CurrentThread {
         unsafe { next.mm.activate() };
 
         let (next_ptr, prev_ptr) = {
-            let guard = CURRENT.borrow();
-            let next_ptr = &mut *next as *mut Thread;
-            let previous = guard.replace(next).expect("no current kernel thread");
-            (next_ptr, Box::into_raw(previous))
+            PerCore::with_mut(|per_core| {
+                let guard = per_core.current.borrow();
+                let next_ptr = &mut *next as *mut Thread;
+                let previous = guard.replace(next);
+                (next_ptr, Box::into_raw(previous))
+            })
         };
 
-        // SAFETY: both allocations are live and distinct. CURRENT owns `next`;
+        // SAFETY: both allocations are live and distinct. PerCore.current owns `next`;
         // `_after_switch` consumes `prev_ptr` after execution leaves its stack.
         // The owner-slot borrow was released before entering the new context,
         // and the scheduler keeps interrupts disabled across this handoff.
@@ -133,14 +144,12 @@ struct CurrentThreadGuard<'a> {
 }
 
 impl CurrentThreadGuard<'_> {
-    fn replace(&self, next: Box<Thread>) -> Option<Box<Thread>> {
-        unsafe { (&mut *self.current.thread.get()).replace(next) }
+    fn replace(&self, next: Box<Thread>) -> Box<Thread> {
+        unsafe { mem::replace(&mut *self.current.thread.get(), next) }
     }
 
     fn with_mut<R>(&self, f: impl FnOnce(&mut Thread) -> R) -> R {
-        let current = unsafe { &mut *self.current.thread.get() }
-            .as_deref_mut()
-            .expect("no current kernel thread");
+        let current = unsafe { &mut *self.current.thread.get() };
         f(current)
     }
 }
@@ -151,33 +160,24 @@ impl Drop for CurrentThreadGuard<'_> {
     }
 }
 
-pub fn jump_to_idle() -> ! {
-    let mut idle = Thread::new(|| {
-        arch::trap::init();
-        arch::timer::init();
-
-        loop {
-            core::hint::spin_loop();
-            SCHEDULER.try_run_next();
-        }
-    });
-    idle.state = ThreadState::Running;
-
+pub fn jump_to_scheduler() -> ! {
     assert!(!arch::asm::interrupt::is_enabled());
-    let idle = {
-        unsafe { idle.mm.activate() };
-        let idle_ptr = &mut *idle as *mut Thread;
-        assert!(
-            CURRENT.borrow().replace(idle).is_none(),
-            "current thread is already installed"
+    let idle = CurrentThread::with_mut(|idle| {
+        assert_eq!(
+            idle.state,
+            ThreadState::Ready,
+            "idle thread already started"
         );
-        idle_ptr
-    };
+        idle.state = ThreadState::Running;
+        unsafe { idle.mm.activate() };
+        idle as *mut Thread
+    });
 
-    // SAFETY: CURRENT owns `idle` for the lifetime of its running context. Every
-    // kernel mapping needed to finish the direct switch is shared with the
-    // currently active address space. Boot keeps interrupts disabled until
-    // `_switch_to` restores the idle thread's saved SIE state.
+    // SAFETY: this hart's PerCore.current has owned its private `idle` since
+    // primary-hart initialization. Every kernel mapping needed to finish the
+    // direct switch is shared with the currently active address space. Boot
+    // keeps interrupts disabled until `_switch_to` restores the idle thread's
+    // saved SIE state.
     unsafe { arch::switch::_switch_to(&(*idle).switch) }
 }
 
@@ -192,9 +192,10 @@ pub extern "C" fn _kernel_thread_start() -> ! {
 ///
 /// # Safety
 ///
-/// `prev` must be the previously running thread passed by `_switch`. CURRENT
-/// must own the thread whose context and stack `_switch` just restored. `prev`
-/// must no longer be executing or present in the ready queue.
+/// `prev` must be the previously running thread passed by `_switch`. This
+/// hart's PerCore.current must own the thread whose context and stack `_switch`
+/// just restored. `prev` must no longer be executing or present in the ready
+/// queue.
 pub unsafe extern "C" fn _after_switch(prev: *mut Thread) {
     // SAFETY: `_switch` passes the previously running thread as `prev` and calls
     // this exactly once after the next thread's stack/registers have been

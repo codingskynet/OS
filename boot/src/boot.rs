@@ -8,6 +8,7 @@ use runtime::arch::consts::PAGE_SIZE;
 use runtime::dev::dt::{Fdt, prop};
 use runtime::kernel::clock::ClockMeta;
 use runtime::kernel::console;
+use runtime::kernel::per_core::PerCore;
 use runtime::kernel::sync::freezable::FreezableToken;
 use runtime::mm::addr::Pa;
 use runtime::mm::page_meta::{PageMeta, PageMetaSection};
@@ -18,7 +19,6 @@ use crate::arch;
 use crate::bump::{BUMP_ALLOCATOR, BumpAllocator};
 
 /// Information passed from architecture-specific boot code to common boot.
-#[allow(unused)]
 pub struct BootInfo {
     /// Hardware identifier of the CPU that entered the common kernel path.
     pub boot_cpu_id: usize,
@@ -62,6 +62,7 @@ pub unsafe fn kernel_boot(boot_info: BootInfo) -> ! {
                 init_page_metadata(&mut token, &mut alloc);
             }
             unsafe { arch::paging::init_page_table(fdt) };
+            PerCore::init(fdt, boot_info.boot_cpu_id);
         }
     }
 
