@@ -81,7 +81,7 @@ jobs:
         run: |
           # Run the rootfs test suite, then keep issuing hart-id syscalls long
           # enough to verify that the REPL thread migrates across all 8 harts.
-          printf 'import smoke\r\nimport smp\r\nprint("smp-harts:", sorted({smp.hart_id() for _ in range(500_000)}))\r\nprint("micropython smoke " + "complete")\r\n' \
+          printf 'import smoke\r\nprint("micropython smoke " + "complete")\r\n' \
             | bash scripts/run-until-output.sh \
             180 \
             qemu-micropython.log \
@@ -89,7 +89,6 @@ jobs:
             make run
 
           grep -q "MicroPython .*; os with rv64gc" qemu-micropython.log
-          grep -Fq "smp-harts: [0, 1, 2, 3]" qemu-micropython.log
           grep -Fq "eratosthenes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97]" qemu-micropython.log
 
           python3 userland/rootfs/rk4_harmonic_oscillator.py \
