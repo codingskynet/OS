@@ -7,17 +7,17 @@ use crate::arch;
 use crate::arch::interrupt::InterruptGuard;
 use crate::kernel::per_core::PerCore;
 use crate::kernel::scheduler::SCHEDULER;
-use crate::kernel::thread::{Thread, ThreadState};
+use crate::kernel::thread::{Thread, ThreadKind, ThreadState};
 use crate::mm::MmContext;
 use crate::mm::addr::Va;
 
 /// Owns the running thread on one hart.
 ///
-/// Ready threads are normally owned by the scheduler. The one exception is the
-/// idle context preinstalled before its hart starts; [`jump_to_scheduler`] promotes
-/// it directly to Running. Immediately before later context switches, ownership
-/// moves here from the run queue and the previous running thread is converted
-/// to the raw pointer consumed by `_after_switch`.
+/// Ready threads are normally owned by the scheduler. The idle context is
+/// preinstalled here before its hart starts; [`jump_to_scheduler`] promotes it
+/// directly to Running. After its first switch, the idle context is parked in
+/// its [`PerCore`] instead of entering the global run queue. The scheduler may
+/// take that local fallback when no normal thread is globally ready.
 ///
 /// The mutable-borrow flag is deliberately separate from ownership. It rejects
 /// reentrant `with_current_mut` calls before a second `&mut Thread` is
@@ -187,8 +187,8 @@ pub extern "C" fn _kernel_thread_start() -> ! {
     exit(0);
 }
 
-/// Requeue or destroy the thread that just stopped running after a context
-/// switch.
+/// Requeue, park, or destroy the thread that just stopped running after a
+/// context switch.
 ///
 /// # Safety
 ///
@@ -200,8 +200,8 @@ pub unsafe extern "C" fn _after_switch(prev: *mut Thread) {
     // SAFETY: `_switch` passes the previously running thread as `prev` and calls
     // this exactly once after the next thread's stack/registers have been
     // restored. At this point `prev` is no longer executing and is not in the
-    // ready queue. Rebuilding a `Box` is used only to either requeue that
-    // allocation or destroy it when the thread has exited.
+    // ready queue. Rebuilding a `Box` is used only to requeue a normal thread,
+    // park an idle thread in its PerCore, or destroy an exited thread.
     unsafe {
         let prev = &mut *prev;
         match prev.state {
@@ -209,7 +209,14 @@ pub unsafe extern "C" fn _after_switch(prev: *mut Thread) {
             ThreadState::Exited => drop(Box::from_raw(prev)),
             ThreadState::Running => {
                 prev.state = ThreadState::Ready;
-                SCHEDULER.push(Box::from_raw(prev))
+                if prev.kind == ThreadKind::Idle {
+                    assert!(
+                        PerCore::try_park_idle(Box::from_raw(prev)).is_none(),
+                        "idle is unique"
+                    );
+                } else {
+                    SCHEDULER.push(Box::from_raw(prev));
+                }
             }
             ThreadState::Blocked => todo!("blocked threads are not implemented"),
         }

@@ -25,10 +25,10 @@ pub fn spawn(entry: impl FnOnce() + Send + 'static) -> Arc<AtomicIsize> {
 }
 
 pub fn yield_now() {
-    // On SMP, another hart may consume the final ready thread between yields.
-    // An empty global run queue therefore means there is nothing to yield to;
-    // keep executing the current thread instead of treating it as an error.
-    SCHEDULER.try_run_next();
+    // If no normal thread is ready, switch through this hart's idle context.
+    // The switch-out path requeues this thread globally, allowing another hart
+    // to claim it before the local idle loop schedules again.
+    SCHEDULER.run_next();
 }
 
 /// Scheduler-visible lifecycle state for a kernel thread.
@@ -41,9 +41,17 @@ pub enum ThreadState {
     Exited,
 }
 
+/// Distinguishes per-hart idle contexts from globally schedulable threads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThreadKind {
+    Idle,
+    Normal,
+}
+
 /// Kernel thread metadata, stored separately from its guarded stack mappings.
 #[repr(C)]
 pub struct Thread {
+    kind: ThreadKind,
     state: ThreadState,
     switch: arch::switch::SwitchContext,
     stack: KernelStack,
@@ -57,11 +65,45 @@ pub struct Thread {
 
 impl Thread {
     pub fn new(entry: impl FnOnce() + Send + 'static) -> Box<Thread> {
+        Self::new_with_kind(entry, ThreadKind::Normal)
+    }
+
+    /// Build one hart's idle context during primary-hart initialization.
+    ///
+    /// All idle contexts execute the same entry code, but each owns a distinct
+    /// [`Thread`], switch context, and guarded kernel stack. Two harts may be
+    /// idle concurrently, so those mutable execution resources cannot be
+    /// shared. An idle context is parked in its [`PerCore`](crate::kernel::per_core::PerCore)
+    /// while normal work runs and never enters the global run queue.
+    pub fn new_idle() -> Box<Thread> {
+        Self::new_with_kind(
+            || {
+                crate::kernel::init::idle_online();
+                loop {
+                    if !SCHEDULER.run_next() {
+                        arch::asm::interrupt::wait();
+                    }
+                }
+            },
+            ThreadKind::Idle,
+        )
+    }
+
+    pub fn stack_bottom(&self) -> Va {
+        self.stack.bottom()
+    }
+
+    pub fn exit_code(&self) -> Option<Arc<AtomicIsize>> {
+        self.exit_code.clone()
+    }
+
+    fn new_with_kind(entry: impl FnOnce() + Send + 'static, kind: ThreadKind) -> Box<Thread> {
         // Install the shared kernel-stack mappings before cloning the active
         // kernel page-table subtree into this thread's memory context.
         let stack = KernelStack::new();
 
         let mut thread = Box::new(Self {
+            kind,
             state: ThreadState::Ready,
             switch: arch::switch::SwitchContext::default(),
             stack,
@@ -78,37 +120,12 @@ impl Thread {
         thread
     }
 
-    /// Build one hart's idle context during primary-hart initialization.
-    ///
-    /// All idle contexts execute the same entry code, but each owns a distinct
-    /// [`Thread`], switch context, and guarded kernel stack. Two harts may be
-    /// idle concurrently, so those mutable execution resources cannot be
-    /// shared.
-    pub fn new_idle() -> Box<Thread> {
-        Self::new(|| {
-            crate::kernel::init::idle_online();
-            loop {
-                if !SCHEDULER.try_run_next() {
-                    arch::asm::interrupt::wait();
-                }
-            }
-        })
-    }
-
-    pub fn exit_code(&self) -> Option<Arc<AtomicIsize>> {
-        self.exit_code.clone()
-    }
-
     fn set_exit(&mut self, code: isize) {
         self.state = ThreadState::Exited;
         self.exit_code
             .take()
             .unwrap()
             .store(code, Ordering::Relaxed);
-    }
-
-    pub fn stack_bottom(&self) -> Va {
-        self.stack.bottom()
     }
 
     fn stack_top(&self) -> Va {

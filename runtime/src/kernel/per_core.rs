@@ -7,7 +7,7 @@ use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use crate::arch;
 use crate::arch::interrupt::InterruptGuard;
 use crate::dev::dt::Fdt;
-use crate::kernel::thread::CurrentThread;
+use crate::kernel::thread::{CurrentThread, Thread};
 use crate::panic::PanicStack;
 
 /// Next dense index to assign to a hart installing its per-core pointer.
@@ -28,6 +28,7 @@ pub struct PerCore {
     pub index: usize,
     pub hart_id: usize,
     pub current: CurrentThread,
+    idle: Option<Box<Thread>>,
     panic_stack: Box<PanicStack>,
 }
 
@@ -40,6 +41,7 @@ impl PerCore {
             index,
             hart_id: usize::MAX,
             current,
+            idle: None,
             panic_stack: PanicStack::allocate(),
         }
     }
@@ -104,6 +106,31 @@ impl PerCore {
 
     pub fn core_id() -> usize {
         PerCore::with_mut(|c| c.hart_id)
+    }
+
+    /// Park this hart's idle context after it switches out.
+    ///
+    /// The caller identifies the context as an idle thread before calling this
+    /// method. `None` means the vacant slot accepted it; `Some(thread)` returns
+    /// ownership unchanged if an idle context was already parked.
+    pub fn try_park_idle(thread: Box<Thread>) -> Option<Box<Thread>> {
+        PerCore::with_mut(|per_core| {
+            if per_core.idle.is_some() {
+                Some(thread)
+            } else {
+                per_core.idle = Some(thread);
+                None
+            }
+        })
+    }
+
+    /// Take the current hart's parked idle context as a local fallback.
+    ///
+    /// `None` means the idle context is already the current thread. A successful
+    /// take is paired with `_after_switch` parking that idle context again after
+    /// it later switches out.
+    pub fn take_idle() -> Option<Box<Thread>> {
+        PerCore::with_mut(|per_core| per_core.idle.take())
     }
 }
 
