@@ -101,9 +101,7 @@ impl BuddyAllocator {
         self.push(page);
     }
 
-    pub(crate) fn free_lists(
-        &self,
-    ) -> impl Iterator<Item = (usize, Option<&OwnedPageMeta<Buddy>>)> {
+    pub fn free_lists(&self) -> impl Iterator<Item = (usize, Option<&OwnedPageMeta<Buddy>>)> {
         self.heads
             .iter()
             .enumerate()

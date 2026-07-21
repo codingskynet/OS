@@ -84,7 +84,7 @@ pub fn init() {
 /// kernel-stack slot. The entry sequence disables supervisor interrupts before
 /// changing the `sscratch` stack-switch contract.
 #[unsafe(naked)]
-pub(crate) unsafe extern "C" fn enter_user(_entry: Va, _user_sp: Va, _kernel_sp: Va) -> ! {
+pub unsafe extern "C" fn enter_user(_entry: Va, _user_sp: Va, _kernel_sp: Va) -> ! {
     macro_rules! zero_regs {
         ($($reg:ident),+ $(,)?) => {
             $crate::asm!(@asm_lines(
@@ -128,7 +128,7 @@ pub(crate) unsafe extern "C" fn enter_user(_entry: Va, _user_sp: Va, _kernel_sp:
 /// Hardware must enter this function through `stvec`. For S-mode traps `sp`
 /// must identify the current thread's guarded kernel-stack slot and `sscratch`
 /// must be 0. For U-mode traps `sscratch` holds the mapped trap-entry scratch
-/// anchor installed by [`enter_user`].
+/// anchor installed by `enter_user`.
 /// It is naked because it saves the interrupted register state itself before
 /// calling Rust code.
 ///
